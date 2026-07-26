@@ -1,0 +1,11 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+scan_cache.json
+fundamental_cache.json
+dynamic_universes.json
+.DS_Store
