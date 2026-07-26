@@ -23,6 +23,8 @@ import os
 import threading
 import tempfile
 import csv
+import hashlib
+import time
 from io import StringIO
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
@@ -56,6 +58,7 @@ ZERODHA_API_SECRET = os.getenv("ZERODHA_API_SECRET", "")
 ZERODHA_ACCESS_TOKEN = os.getenv("ZERODHA_ACCESS_TOKEN")
 ZERODHA_REQUEST_TOKEN = os.getenv("ZERODHA_REQUEST_TOKEN")
 ZERODHA_USER_ID = os.getenv("ZERODHA_USER_ID")
+ZERODHA_ENCTOKEN = os.getenv("ZERODHA_ENCTOKEN")
 
 
 def fetch_dynamic_nse_equities() -> List[Dict]:
@@ -193,8 +196,11 @@ if not dynamic_universes:
 
 
 def get_zerodha_session() -> Optional[Dict]:
-    """Create or refresh a Zerodha access token session when a request token is available."""
+    """Create or refresh a Zerodha access token session when credentials are available."""
     global ZERODHA_ACCESS_TOKEN, ZERODHA_USER_ID
+
+    if ZERODHA_ENCTOKEN:
+        return {"enctoken": ZERODHA_ENCTOKEN}
 
     if ZERODHA_ACCESS_TOKEN:
         return {"access_token": ZERODHA_ACCESS_TOKEN, "user_id": ZERODHA_USER_ID}
@@ -203,32 +209,42 @@ def get_zerodha_session() -> Optional[Dict]:
         return None
 
     try:
+        checksum = hashlib.sha256(f"{ZERODHA_API_KEY}{ZERODHA_REQUEST_TOKEN}{ZERODHA_API_SECRET}".encode("utf-8")).hexdigest()
+        print(f"🔑 Exchanging Zerodha request_token for access_token (API Key: {ZERODHA_API_KEY[:4]}...)...")
         response = requests.post(
             "https://api.kite.trade/session/token",
             data={
                 "api_key": ZERODHA_API_KEY,
                 "request_token": ZERODHA_REQUEST_TOKEN,
-                "secret": ZERODHA_API_SECRET,
+                "checksum": checksum
             },
-            timeout=20,
+            timeout=15,
         )
-        response.raise_for_status()
         payload = response.json()
-        ZERODHA_ACCESS_TOKEN = payload.get("access_token")
-        ZERODHA_USER_ID = payload.get("user_id")
-        if ZERODHA_ACCESS_TOKEN:
-            os.environ["ZERODHA_ACCESS_TOKEN"] = ZERODHA_ACCESS_TOKEN
-        return {"access_token": ZERODHA_ACCESS_TOKEN, "user_id": ZERODHA_USER_ID}
-    except Exception:
+        if response.status_code == 200 and "data" in payload:
+            data = payload["data"]
+            ZERODHA_ACCESS_TOKEN = data.get("access_token")
+            ZERODHA_USER_ID = data.get("user_id")
+            print(f"✅ Zerodha session authenticated successfully for user: {ZERODHA_USER_ID}")
+            return {"access_token": ZERODHA_ACCESS_TOKEN, "user_id": ZERODHA_USER_ID}
+        else:
+            print(f"❌ Zerodha session exchange failed (HTTP {response.status_code}): {payload}")
+            return None
+    except Exception as exc:
+        print(f"❌ Zerodha session exception: {exc}")
         return None
 
 
 def get_zerodha_headers() -> Dict[str, str]:
     """Return request headers for Zerodha authenticated calls."""
     session = get_zerodha_session()
-    if not session or not session.get("access_token"):
+    if not session:
         return {}
-    return {"Authorization": f"token {ZERODHA_API_KEY}:{session['access_token']}", "X-Kite-Version": "3"}
+    if "enctoken" in session:
+        return {"Authorization": f"enctoken {session['enctoken']}"}
+    if session.get("access_token"):
+        return {"Authorization": f"token {ZERODHA_API_KEY}:{session['access_token']}", "X-Kite-Version": "3"}
+    return {}
 
 
 def normalize_ticker(ticker: str) -> str:
@@ -311,44 +327,63 @@ def clean_ohlcv(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     return out.tail(600) if len(out) >= 10 else None
 
 
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
+]
+
 def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval: str = "1d") -> Optional[pd.DataFrame]:
-    """Fetch directly calling Yahoo Finance Chart API with browser User-Agent headers."""
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range={period}&interval={interval}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-        }
-        res = requests.get(url, headers=headers, timeout=12)
-        if res.status_code != 200:
-            print(f"⚠️ Direct Yahoo Chart API status {res.status_code} for {ticker}")
-            return None
-        data = res.json()
-        result = data.get("chart", {}).get("result", [])
-        if not result:
-            err = data.get("chart", {}).get("error", {})
-            print(f"⚠️ Direct Yahoo Chart API empty result for {ticker}: {err}")
-            return None
+    """Fetch directly calling Yahoo Finance Chart API with User-Agent and domain rotation."""
+    domains = ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]
+    for attempt in range(2):
+        domain = domains[attempt % len(domains)]
+        ua = USER_AGENTS[(hash(ticker) + attempt) % len(USER_AGENTS)]
+        url = f"https://{domain}/v8/finance/chart/{ticker}?range={period}&interval={interval}"
+        headers = {"User-Agent": ua}
 
-        chart_data = result[0]
-        timestamps = chart_data.get("timestamp", [])
-        indicators = chart_data.get("indicators", {}).get("quote", [{}])[0]
+        try:
+            res = requests.get(url, headers=headers, timeout=10)
+            if res.status_code == 429:
+                if attempt == 0:
+                    time.sleep(0.3)
+                    continue
+                else:
+                    print(f"⚠️ Direct Yahoo Chart API rate-limited (429) for {ticker}")
+                    return None
 
-        if not timestamps or not indicators:
-            print(f"⚠️ Direct Yahoo Chart API missing timestamps for {ticker}")
-            return None
+            if res.status_code != 200:
+                print(f"⚠️ Direct Yahoo Chart API status {res.status_code} for {ticker}")
+                return None
 
-        df = pd.DataFrame({
-            "open": indicators.get("open", []),
-            "high": indicators.get("high", []),
-            "low": indicators.get("low", []),
-            "close": indicators.get("close", []),
-            "volume": indicators.get("volume", []),
-        }, index=pd.to_datetime(timestamps, unit="s"))
+            data = res.json()
+            result = data.get("chart", {}).get("result", [])
+            if not result:
+                err = data.get("chart", {}).get("error", {})
+                print(f"⚠️ Direct Yahoo Chart API empty result for {ticker}: {err}")
+                return None
 
-        return clean_ohlcv(df)
-    except Exception as exc:
-        print(f"❌ Direct Yahoo Chart API error for {ticker}: {exc}")
-        return None
+            chart_data = result[0]
+            timestamps = chart_data.get("timestamp", [])
+            indicators = chart_data.get("indicators", {}).get("quote", [{}])[0]
+
+            if not timestamps or not indicators:
+                return None
+
+            df = pd.DataFrame({
+                "open": indicators.get("open", []),
+                "high": indicators.get("high", []),
+                "low": indicators.get("low", []),
+                "close": indicators.get("close", []),
+                "volume": indicators.get("volume", []),
+            }, index=pd.to_datetime(timestamps, unit="s"))
+
+            return clean_ohlcv(df)
+        except Exception as exc:
+            if attempt == 1:
+                print(f"❌ Direct Yahoo Chart API error for {ticker}: {exc}")
+    return None
 
 
 def fetch_stock_data_yahoo(ticker: str, period: str = "2y", interval: str = "1d") -> Optional[pd.DataFrame]:
@@ -386,19 +421,26 @@ def fetch_stock_data_zerodha(ticker: str) -> Optional[pd.DataFrame]:
             params={"from": from_date.isoformat(), "to": to_date.isoformat()},
             timeout=20,
         )
-        response.raise_for_status()
+        if response.status_code != 200:
+            print(f"⚠️ Zerodha API status {response.status_code} for {ticker}: {response.text}")
+            return None
         return clean_ohlcv(parse_zerodha_candles(response.json()))
     except Exception as exc:
         scan_cache["errors"].append(f"{ticker}: Zerodha fetch failed ({exc})")
+        print(f"❌ Zerodha fetch failed for {ticker}: {exc}")
         return None
 
 
 def fetch_stock_data(ticker: str, period: str = "2y", interval: str = "1d") -> Optional[pd.DataFrame]:
-    """Fetch historical OHLCV data from Yahoo Finance, with Zerodha as fallback."""
-    df = fetch_stock_data_yahoo(ticker, period, interval)
-    if df is not None:
-        return df
-    return fetch_stock_data_zerodha(ticker)
+    """Fetch historical OHLCV data using Zerodha FIRST if configured, with Yahoo Finance as fallback."""
+    # 1. Try Zerodha FIRST if Zerodha credentials exist
+    if ZERODHA_ENCTOKEN or ZERODHA_ACCESS_TOKEN or (ZERODHA_API_KEY and ZERODHA_REQUEST_TOKEN):
+        df_zerodha = fetch_stock_data_zerodha(ticker)
+        if df_zerodha is not None and not df_zerodha.empty:
+            return df_zerodha
+
+    # 2. Fallback to Yahoo Finance (Direct API + yfinance)
+    return fetch_stock_data_yahoo(ticker, period, interval)
 
 
 # ============================================================
