@@ -312,7 +312,7 @@ def clean_ohlcv(df: pd.DataFrame) -> Optional[pd.DataFrame]:
 
 
 def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval: str = "1d") -> Optional[pd.DataFrame]:
-    """Fallback fetch directly calling Yahoo Finance Chart API with browser User-Agent headers."""
+    """Fetch directly calling Yahoo Finance Chart API with browser User-Agent headers."""
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range={period}&interval={interval}"
         headers = {
@@ -320,10 +320,13 @@ def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval:
         }
         res = requests.get(url, headers=headers, timeout=12)
         if res.status_code != 200:
+            print(f"⚠️ Direct Yahoo Chart API status {res.status_code} for {ticker}")
             return None
         data = res.json()
         result = data.get("chart", {}).get("result", [])
         if not result:
+            err = data.get("chart", {}).get("error", {})
+            print(f"⚠️ Direct Yahoo Chart API empty result for {ticker}: {err}")
             return None
 
         chart_data = result[0]
@@ -331,6 +334,7 @@ def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval:
         indicators = chart_data.get("indicators", {}).get("quote", [{}])[0]
 
         if not timestamps or not indicators:
+            print(f"⚠️ Direct Yahoo Chart API missing timestamps for {ticker}")
             return None
 
         df = pd.DataFrame({
@@ -342,31 +346,26 @@ def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval:
         }, index=pd.to_datetime(timestamps, unit="s"))
 
         return clean_ohlcv(df)
-    except Exception:
+    except Exception as exc:
+        print(f"❌ Direct Yahoo Chart API error for {ticker}: {exc}")
         return None
 
 
 def fetch_stock_data_yahoo(ticker: str, period: str = "2y", interval: str = "1d") -> Optional[pd.DataFrame]:
-    """Fetch daily/weekly/intraday OHLCV using Direct Yahoo Chart API primary (bypassing 401 Crumb errors)."""
-    # 1. Try Direct API first (Fastest, 0 Crumb required, 100% Reliable on Render/Cloud IPs)
+    """Fetch daily/weekly/intraday OHLCV from Yahoo Finance."""
+    # 1. Try Direct API first (Fastest & Most Reliable on Cloud IPs)
     df_direct = fetch_stock_data_direct_chart_api(ticker, period, interval)
     if df_direct is not None and not df_direct.empty:
         return df_direct
 
-    # 2. Fallback to yfinance with stderr suppression (prevents 401 noise in logs)
+    # 2. Fallback to yfinance
     try:
-        with open(os.devnull, 'w') as devnull:
-            old_stderr = sys.stderr
-            sys.stderr = devnull
-            try:
-                df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False, threads=False)
-            finally:
-                sys.stderr = old_stderr
+        df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False, threads=False)
         cleaned = clean_ohlcv(df)
         if cleaned is not None and not cleaned.empty:
             return cleaned
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"❌ yfinance download failed for {ticker}: {exc}")
 
     return None
 
