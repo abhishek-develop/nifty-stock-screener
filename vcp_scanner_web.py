@@ -347,17 +347,28 @@ def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval:
 
 
 def fetch_stock_data_yahoo(ticker: str, period: str = "2y", interval: str = "1d") -> Optional[pd.DataFrame]:
-    """Fetch daily/weekly/intraday OHLCV from Yahoo Finance with Direct API fallback."""
+    """Fetch daily/weekly/intraday OHLCV using Direct Yahoo Chart API primary (bypassing 401 Crumb errors)."""
+    # 1. Try Direct API first (Fastest, 0 Crumb required, 100% Reliable on Render/Cloud IPs)
+    df_direct = fetch_stock_data_direct_chart_api(ticker, period, interval)
+    if df_direct is not None and not df_direct.empty:
+        return df_direct
+
+    # 2. Fallback to yfinance with stderr suppression (prevents 401 noise in logs)
     try:
-        df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False, threads=False)
+        with open(os.devnull, 'w') as devnull:
+            old_stderr = sys.stderr
+            sys.stderr = devnull
+            try:
+                df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False, threads=False)
+            finally:
+                sys.stderr = old_stderr
         cleaned = clean_ohlcv(df)
         if cleaned is not None and not cleaned.empty:
             return cleaned
     except Exception:
         pass
 
-    # Direct Yahoo Chart API Fallback (Bypasses 401 Crumb Error on Cloud IPs)
-    return fetch_stock_data_direct_chart_api(ticker, period, interval)
+    return None
 
 
 def fetch_stock_data_zerodha(ticker: str) -> Optional[pd.DataFrame]:
@@ -499,17 +510,23 @@ def fetch_fundamental_metrics(ticker: str) -> Dict:
 
     try:
         yf_sym = f"{clean_sym}.NS"
-        t = yf.Ticker(yf_sym)
-        
-        fi = getattr(t, 'fast_info', {}) or {}
+        info = {}
+        fi = {}
+        with open(os.devnull, 'w') as devnull:
+            old_stderr = sys.stderr
+            sys.stderr = devnull
+            try:
+                t = yf.Ticker(yf_sym)
+                fi = getattr(t, 'fast_info', {}) or {}
+                try:
+                    info = t.info or {}
+                except Exception:
+                    info = {}
+            finally:
+                sys.stderr = old_stderr
+
         market_cap = getattr(fi, 'market_cap', None) or (fi.get('market_cap') if isinstance(fi, dict) else None)
         pe_fast = getattr(fi, 'pe_ratio', None) or (fi.get('pe_ratio') if isinstance(fi, dict) else None)
-
-        info = {}
-        try:
-            info = t.info or {}
-        except Exception:
-            info = {}
 
         eps = info.get('trailingEps') or info.get('forwardEps')
         pe_val = pe_fast or info.get('trailingPE') or info.get('forwardPE')
