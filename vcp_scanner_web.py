@@ -311,14 +311,53 @@ def clean_ohlcv(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     return out.tail(600) if len(out) >= 10 else None
 
 
+def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval: str = "1d") -> Optional[pd.DataFrame]:
+    """Fallback fetch directly calling Yahoo Finance Chart API with browser User-Agent headers."""
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range={period}&interval={interval}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        }
+        res = requests.get(url, headers=headers, timeout=12)
+        if res.status_code != 200:
+            return None
+        data = res.json()
+        result = data.get("chart", {}).get("result", [])
+        if not result:
+            return None
+
+        chart_data = result[0]
+        timestamps = chart_data.get("timestamp", [])
+        indicators = chart_data.get("indicators", {}).get("quote", [{}])[0]
+
+        if not timestamps or not indicators:
+            return None
+
+        df = pd.DataFrame({
+            "open": indicators.get("open", []),
+            "high": indicators.get("high", []),
+            "low": indicators.get("low", []),
+            "close": indicators.get("close", []),
+            "volume": indicators.get("volume", []),
+        }, index=pd.to_datetime(timestamps, unit="s"))
+
+        return clean_ohlcv(df)
+    except Exception:
+        return None
+
+
 def fetch_stock_data_yahoo(ticker: str, period: str = "2y", interval: str = "1d") -> Optional[pd.DataFrame]:
-    """Fetch daily/weekly/intraday OHLCV from Yahoo Finance."""
+    """Fetch daily/weekly/intraday OHLCV from Yahoo Finance with Direct API fallback."""
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False, threads=False)
-        return clean_ohlcv(df)
-    except Exception as exc:
-        scan_cache["errors"].append(f"{ticker}: Yahoo fetch failed ({exc})")
-        return None
+        cleaned = clean_ohlcv(df)
+        if cleaned is not None and not cleaned.empty:
+            return cleaned
+    except Exception:
+        pass
+
+    # Direct Yahoo Chart API Fallback (Bypasses 401 Crumb Error on Cloud IPs)
+    return fetch_stock_data_direct_chart_api(ticker, period, interval)
 
 
 def fetch_stock_data_zerodha(ticker: str) -> Optional[pd.DataFrame]:
