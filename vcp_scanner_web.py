@@ -977,6 +977,52 @@ SECTOR_MAPPING = {
     "DLF": "Real Estate & Infra", "LODHA": "Real Estate & Infra", "GODREJPROP": "Real Estate & Infra", "OBEROI": "Real Estate & Infra"
 }
 
+def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval: str = "1d") -> Optional[pd.DataFrame]:
+    """Fetch directly calling Yahoo Finance Chart API with User-Agent and domain rotation."""
+    domains = ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]
+    for attempt in range(3):
+        domain = domains[attempt % len(domains)]
+        ua = USER_AGENTS[(hash(ticker) + attempt) % len(USER_AGENTS)]
+        url = f"https://{domain}/v8/finance/chart/{ticker}?range={period}&interval={interval}"
+        headers = {"User-Agent": ua}
+
+        try:
+            res = requests.get(url, headers=headers, timeout=8)
+            if res.status_code == 429:
+                time.sleep(0.2 * (attempt + 1))
+                continue
+
+            if res.status_code != 200:
+                if attempt == 2:
+                    print(f"⚠️ Direct Yahoo Chart API status {res.status_code} for {ticker}")
+                return None
+
+            data = res.json()
+            result = data.get("chart", {}).get("result", [])
+            if not result:
+                return None
+
+            chart_data = result[0]
+            timestamps = chart_data.get("timestamp", [])
+            indicators = chart_data.get("indicators", {}).get("quote", [{}])[0]
+
+            if not timestamps or not indicators:
+                return None
+
+            df = pd.DataFrame({
+                "open": indicators.get("open", []),
+                "high": indicators.get("high", []),
+                "low": indicators.get("low", []),
+                "close": indicators.get("close", []),
+                "volume": indicators.get("volume", []),
+            }, index=pd.to_datetime(timestamps, unit="s"))
+
+            return clean_ohlcv(df)
+        except Exception:
+            if attempt == 2:
+                pass
+    return None
+
 def resolve_stock_sector(ticker: str, fund_metrics: Dict = None) -> str:
     """Resolve stock sector using fundamental metrics + heuristic mapping."""
     clean_sym = normalize_ticker(ticker)
@@ -1124,7 +1170,7 @@ def scan_universe(tickers: List[str], min_score: int = 0,
             scan_cache["errors"].append(f"{ticker}: {str(e)}")
         return None
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(_worker, ticker): ticker for ticker in tickers}
         for future in as_completed(futures):
             res = future.result()
