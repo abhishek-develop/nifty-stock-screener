@@ -727,16 +727,25 @@ def fetch_fundamental_metrics(ticker: str) -> Dict:
 
         metrics["about"] = summary_text
 
-        # Real fundamental soundness filter: exclude stocks with negative EPS + negative ROE + extreme debt
+        # Strict fundamental quality evaluation (Requires positive EPS, ROE >= 10%, margin >= 3%, low debt, sensible P/E)
         eps_val = metrics.get("eps")
         roe_val = metrics.get("roe")
         de_val = metrics.get("debt_to_equity")
+        margin_val = metrics.get("profit_margin")
+        pe_val = metrics.get("pe")
+
         is_sound = True
-        if eps_val is not None and eps_val <= 0:
-            if roe_val is not None and roe_val < 0:
-                is_sound = False  # Loss-making with negative returns
-        if de_val is not None and de_val > 200:
-            is_sound = False  # Extremely over-leveraged
+        if eps_val is None or eps_val <= 0:
+            is_sound = False  # Reject loss-making or missing EPS
+        if roe_val is None or roe_val < 10.0:
+            is_sound = False  # Reject low ROE (< 10%) or missing ROE
+        if margin_val is not None and margin_val < 3.0:
+            is_sound = False  # Reject weak profit margin (< 3%)
+        if de_val is not None and de_val > 100.0:
+            is_sound = False  # Reject over-leveraged debt ratio (> 100%)
+        if pe_val is not None and (pe_val <= 0 or pe_val > 75.0):
+            is_sound = False  # Reject negative or hyper-inflated P/E (> 75)
+
         metrics["is_fundamentally_sound"] = is_sound
 
     except Exception:
@@ -781,25 +790,27 @@ def calculate_vcp_score(df: pd.DataFrame) -> Optional[Dict]:
         return None
 
     # 3. Minervini Stage 2 Trend Hard Minimums:
-    # - Stock must be at least 15% above 52-week low
-    # - Stock must be within 35% of 52-week high (exclude deep downtrending fallen knives)
+    # - Stock must be at least 25% above 52-week low
+    # - Stock must be within 25% of 52-week high (exclude deep downtrending fallen knives)
     high_52w = float(df["high"].max())
     low_52w = float(df["low"].min())
-    if low_52w > 0 and current_price < 1.15 * low_52w:
+    if low_52w > 0 and current_price < 1.25 * low_52w:
         return None
-    if high_52w > 0 and current_price < 0.65 * high_52w:
+    if high_52w > 0 and current_price < 0.75 * high_52w:
         return None
 
-    # 4. Volatility Floor: Exclude hyper-volatile erratic stocks (ATR% > 7.5%)
+    # 4. Volatility & Range Caps: Exclude hyper-volatile, loose or erratic stocks
     atr = calculate_atr(df)
     atr_pct = float((atr / current_price) * 100) if current_price > 0 else 999.0
-    if atr_pct > 7.5:
-        return None
+    if atr_pct > 5.5:
+        return None  # Strict ATR% cap
 
     high_20d = float(recent['high'].max())
     low_20d = float(recent['low'].min())
     range_20d = high_20d - low_20d
     range_pct = float((range_20d / current_price) * 100) if current_price > 0 else 999.0
+    if range_pct > 18.0:
+        return None  # Strict 20D range cap (requires tight consolidation base)
 
     current_vol = float(df['volume'].iloc[-1])
     volume_ratio = float(current_vol / avg_vol_20d) if avg_vol_20d > 0 else 1.0
@@ -825,6 +836,10 @@ def calculate_vcp_score(df: pd.DataFrame) -> Optional[Dict]:
     risk_pct = round(float(((entry_price - stop_loss) / entry_price) * 100), 2) if entry_price > 0 else 0.0
     breakout_distance_pct = round(float(((prior_resistance - current_price) / current_price) * 100), 2) if current_price > 0 else 999.0
 
+    # 5. Pivot Gap Cap: Exclude stocks that are already heavily extended past pivot (> +8%)
+    if breakout_distance_pct > 8.0:
+        return None
+
     days_in_range = int(len(recent[
         (recent['close'] >= current_price * 0.95) & 
         (recent['close'] <= current_price * 1.05)
@@ -836,6 +851,10 @@ def calculate_vcp_score(df: pd.DataFrame) -> Optional[Dict]:
     ma50 = float(close_series.rolling(min(len(df), 50)).mean().iloc[-1])
     ma150 = float(close_series.rolling(min(len(df), 150)).mean().iloc[-1])
     ma200 = float(close_series.rolling(min(len(df), 200)).mean().iloc[-1])
+
+    # 6. Moving Average Hard Criteria: Price must be above MA150 & MA200 for established stocks
+    if len(df) >= 150 and (current_price < ma150 or current_price < ma200):
+        return None
 
     high_52w = float(df["high"].max())
     low_52w = float(df["low"].min())
@@ -901,6 +920,10 @@ def calculate_vcp_score(df: pd.DataFrame) -> Optional[Dict]:
 
     raw_score = trend_score + contraction_score + volume_score + tightness_score + pivot_score
     vcp_score = int(round(min(100, max(0, raw_score))))
+
+    # 7. Minimum VCP Score Floor: Only stocks with a valid base setup (>= 45 pts) pass
+    if vcp_score < 45:
+        return None
 
     # Evidence Checklist
     evidence = []
@@ -1115,10 +1138,16 @@ def scan_stock(ticker: str) -> Optional[VCPResult]:
     if vcp_data is None:
         return None
 
-    # Fundamental Health Evaluation Filter
+    # Fundamental Health Evaluation — Filter out chronic loss-makers & over-indebted firms
     fund_metrics = fetch_fundamental_metrics(ticker)
-    if not fund_metrics.get("is_fundamentally_sound", True):
-        return None  # Exclude fundamentally weak / loss-making / over-indebted stocks
+    eps_val = fund_metrics.get("eps")
+    roe_val = fund_metrics.get("roe")
+    de_val = fund_metrics.get("debt_to_equity")
+
+    if eps_val is not None and eps_val <= 0 and roe_val is not None and roe_val < 0:
+        return None  # Exclude chronic loss-making companies
+    if de_val is not None and de_val > 150.0:
+        return None  # Exclude over-leveraged companies
 
     info = get_stock_info(ticker, fund_metrics)
     current_price = float(df['close'].iloc[-1])
@@ -1198,7 +1227,7 @@ def scan_stock(ticker: str) -> Optional[VCPResult]:
         pe_ratio=fund_metrics.get("pe"),
         roe_pct=fund_metrics.get("roe"),
         profit_margin_pct=fund_metrics.get("profit_margin"),
-        is_fundamentally_sound=True,
+        is_fundamentally_sound=fund_metrics.get("is_fundamentally_sound", True),
         about=fund_metrics.get("about", ""),
         industry=fund_metrics.get("industry", info["sector"]),
         market_cap_cr=fund_metrics.get("market_cap_cr"),

@@ -620,9 +620,9 @@
             <button class="tab-btn" onclick="switchTab('breakout', this)">🚀 Breakout Confirmed</button>
             <button class="tab-btn" onclick="switchTab('forming', this)">⏳ Forming Base</button>
             
-            <label class="filter-toggle">
-                <input type="checkbox" id="hideWeakToggle" checked onchange="renderResults()" style="width:auto; cursor:pointer;">
-                <span>Hide Developing Bases</span>
+            <label class="filter-toggle" style="background: rgba(5, 150, 105, 0.08); border-color: rgba(5, 150, 105, 0.3); color: var(--accent-emerald);">
+                <input type="checkbox" id="fundOnlyToggle" onchange="renderResults()" style="width:auto; cursor:pointer;">
+                <span>💎 High Fundamentals Only</span>
             </label>
 
             <button class="btn-secondary" style="font-size:0.75rem; padding:0.45rem 0.75rem;" onclick="exportCSV()">📥 Export CSV</button>
@@ -990,13 +990,18 @@
             const search = document.getElementById('searchInput').value.toUpperCase();
             const sector = document.getElementById('sectorSelect').value;
             const minScore = parseInt(document.getElementById('minScoreInput').value) || 0;
-            const hideWeak = document.getElementById('hideWeakToggle').checked;
+            const fundOnly = document.getElementById('fundOnlyToggle') ? document.getElementById('fundOnlyToggle').checked : false;
 
             const dataset = activeTab === 'top_picks' ? topPicksResults : (activeTab === 'ipo_breakouts' ? ipoBreakoutsResults : currentResults);
 
             let filtered = dataset.filter(r => {
                 if (r.vcp_score < minScore) return false;
-                if (hideWeak && (r.status === 'weak' || r.vcp_score < 40)) return false;
+                if (fundOnly) {
+                    if (!r.is_fundamentally_sound) return false;
+                    if (r.roe_pct === null || r.roe_pct === undefined || r.roe_pct < 10.0) return false;
+                    if (r.pe_ratio !== null && (r.pe_ratio <= 0 || r.pe_ratio > 75.0)) return false;
+                    if (r.profit_margin_pct !== null && r.profit_margin_pct < 3.0) return false;
+                }
                 if (activeTab !== 'ALL' && activeTab !== 'top_picks' && activeTab !== 'ipo_breakouts' && r.status !== activeTab) return false;
                 if (sector !== 'ALL' && r.sector !== sector) return false;
                 if (search && !r.ticker.toUpperCase().includes(search) && !r.name.toUpperCase().includes(search)) return false;
@@ -1028,6 +1033,11 @@
                         <div>No stocks available for this selection.</div>
                         <button class="btn-primary" style="margin:1rem auto 0 auto;" onclick="runScan()">⚡ Scan Universe Now</button>
                     </td></tr>`;
+                } else if (fundOnly && dataset.length > 0) {
+                    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">
+                        <div>💎 No stocks in this selection match the strict <strong>High Fundamental Quality</strong> filter.</div>
+                        <div style="font-size:0.8rem; margin-top:0.4rem;">Uncheck <strong>'High Fundamentals Only'</strong> to view all technical setups.</div>
+                    </td></tr>`;
                 } else if (activeTab === 'ipo_breakouts') {
                     tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">
                         <div>🐣 No active IPO Breakout patterns detected right now.</div>
@@ -1037,11 +1047,6 @@
                     tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">
                         <div>🚀 No confirmed volume breakouts in this universe right now.</div>
                         <div style="font-size:0.8rem; margin-top:0.4rem;">Check 'Pivoting / Ready' for stocks coiled tight near pivot resistance.</div>
-                    </td></tr>`;
-                } else if (hideWeak && dataset.length > 0) {
-                    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">
-                        <div>📌 All stocks in this selection are developing bases (<40 VCP Rating).</div>
-                        <div style="font-size:0.8rem; margin-top:0.4rem;">Uncheck <strong>'Hide Developing Bases'</strong> to view developing consolidations.</div>
                     </td></tr>`;
                 } else {
                     tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">No stocks match the selected search/sector filters.</td></tr>`;
@@ -1081,6 +1086,9 @@
                 const categoryBadge = r.top_category_tag 
                     ? `<span style="background:rgba(124, 58, 237, 0.1); color:var(--accent-purple); border:1px solid rgba(124, 58, 237, 0.3); font-size:0.7rem; font-weight:700; padding:0.15rem 0.4rem; border-radius:0.3rem; display:inline-block;">${r.top_category_tag}</span>`
                     : '';
+                const fundBadge = r.is_fundamentally_sound 
+                    ? `<span title="Fundamentally Strong (Positive ROE & EPS)" style="font-size:0.75rem; margin-left:0.2rem; cursor:help;">💎</span>` 
+                    : '';
 
                 return `
                     <tr class="stock-row" onclick="openStockChartByTicker('${cleanTicker}')">
@@ -1092,7 +1100,7 @@
                         </td>
                         <td>
                             <div style="display:flex; align-items:center; flex-wrap:wrap; gap:0.3rem;">
-                                <span style="font-weight:700; font-size:0.95rem; color:var(--accent-blue);">${r.ticker}</span>
+                                <span style="font-weight:700; font-size:0.95rem; color:var(--accent-blue);">${r.ticker}</span>${fundBadge}
                                 ${categoryBadge}
                             </div>
                             ${r.conviction_reason ? `<div style="font-size:0.72rem; color:var(--accent-emerald); font-weight:600; margin-top:0.1rem;">${r.conviction_reason}</div>` : `<div style="font-size:0.75rem; color:var(--text-muted);">${r.name}</div>`}
@@ -1172,13 +1180,18 @@
             const search = document.getElementById('searchInput').value.toUpperCase();
             const sector = document.getElementById('sectorSelect').value;
             const minScore = parseInt(document.getElementById('minScoreInput').value) || 0;
-            const hideWeak = document.getElementById('hideWeakToggle').checked;
+            const fundOnly = document.getElementById('fundOnlyToggle') ? document.getElementById('fundOnlyToggle').checked : false;
 
             const dataset = activeTab === 'top_picks' ? topPicksResults : (activeTab === 'ipo_breakouts' ? ipoBreakoutsResults : currentResults);
 
             let filtered = dataset.filter(r => {
                 if (r.vcp_score < minScore) return false;
-                if (hideWeak && (r.status === 'weak' || r.vcp_score < 40)) return false;
+                if (fundOnly) {
+                    if (!r.is_fundamentally_sound) return false;
+                    if (r.roe_pct === null || r.roe_pct === undefined || r.roe_pct < 10.0) return false;
+                    if (r.pe_ratio !== null && (r.pe_ratio <= 0 || r.pe_ratio > 75.0)) return false;
+                    if (r.profit_margin_pct !== null && r.profit_margin_pct < 3.0) return false;
+                }
                 if (activeTab !== 'ALL' && activeTab !== 'top_picks' && activeTab !== 'ipo_breakouts' && r.status !== activeTab) return false;
                 if (sector !== 'ALL' && r.sector !== sector) return false;
                 if (search && !r.ticker.toUpperCase().includes(search) && !r.name.toUpperCase().includes(search)) return false;
@@ -1306,7 +1319,13 @@
                             horzLines: { visible: true, color: '#f1f5f9' }
                         },
                         crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                        timeScale: { borderColor: '#e2e8f0', timeVisible: true, secondsVisible: false },
+                        timeScale: { 
+                            borderColor: '#e2e8f0', 
+                            timeVisible: true, 
+                            secondsVisible: false,
+                            rightOffset: 12,
+                            barSpacing: 8
+                        },
                         handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
                         handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true }
                     });
@@ -1357,6 +1376,7 @@
                     });
 
                     lwChart.timeScale().fitContent();
+                    lwChart.timeScale().applyOptions({ rightOffset: 12 });
                 } else {
                     container.innerHTML = '<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; gap:0.5rem; color:var(--text-muted);"><div>No candle data for this timeframe.</div><button class="btn-primary" style="width:auto; padding:0.4rem 0.8rem; font-size:0.75rem;" onclick="changeTimeframe(\'D\')">Switch to Daily (1D)</button></div>';
                 }
