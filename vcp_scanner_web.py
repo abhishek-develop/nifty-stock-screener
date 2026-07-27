@@ -1220,13 +1220,30 @@ def save_cache():
 # AUTO-SCAN SCHEDULER
 # ============================================================
 
+def scan_single_universe_bg(universe_name: str):
+    """Scan a single universe in background thread when requested via API."""
+    if scan_cache.get(f"scanning_{universe_name}"):
+        return
+    scan_cache[f"scanning_{universe_name}"] = True
+    try:
+        tickers = get_stock_universe(universe_name)
+        if tickers:
+            print(f"⚡ Auto-scanning requested universe '{universe_name}' ({len(tickers)} stocks)...")
+            results = scan_universe(tickers, min_score=0)
+            scan_cache["results"][universe_name] = results
+            save_cache()
+            print(f"  ✓ {universe_name}: {len(results)} analyzed")
+    finally:
+        scan_cache[f"scanning_{universe_name}"] = False
+
+
 def auto_scan():
     """Run scheduled scan for all dynamic universes."""
     print(f"\n🔄 Auto-scan started at {datetime.now()}")
     scan_cache["is_scanning"] = True
 
     try:
-        for universe_name in ["nifty50", "nifty200", "smallcap", "ipo"]:
+        for universe_name in ["nifty50", "nifty200", "nifty500", "smallcap", "ipo", "nse_all"]:
             tickers = get_stock_universe(universe_name)
             print(f"  Scanning dynamic {universe_name} ({len(tickers)} stocks)...")
             results = scan_universe(tickers, min_score=0)
@@ -1403,14 +1420,20 @@ def api_top_picks():
 
 @app.route('/api/results/<universe>')
 def api_results(universe):
-    """Get cached results."""
+    """Get cached results. Auto-trigger scan if empty."""
     results = scan_cache["results"].get(universe, [])
+    is_bg_scanning = scan_cache.get(f"scanning_{universe}", False) or scan_cache["is_scanning"]
+
+    if not results and not is_bg_scanning:
+        threading.Thread(target=scan_single_universe_bg, args=(universe,), daemon=True).start()
+        is_bg_scanning = True
+
     return jsonify({
         "success": True,
         "universe": universe,
         "matches": len(results),
         "last_scan": scan_cache["last_scan"],
-        "is_scanning": scan_cache["is_scanning"],
+        "is_scanning": is_bg_scanning,
         "results": [serialize_result(r) for r in results]
     })
 
