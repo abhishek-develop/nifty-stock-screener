@@ -347,12 +347,9 @@ def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval:
 
         try:
             res = requests.get(url, headers=headers, timeout=8)
-            if res.status_code == 429:
-                time.sleep(0.2 * (attempt + 1))
-                continue
-
             if res.status_code != 200:
-                return None
+                time.sleep(0.15 * (attempt + 1))
+                continue
 
             data = res.json()
             result = data.get("chart", {}).get("result", [])
