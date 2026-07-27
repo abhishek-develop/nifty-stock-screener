@@ -1064,6 +1064,7 @@ def scan_stock(ticker: str) -> Optional[VCPResult]:
     current_price = float(df['close'].iloc[-1])
     prev_close = float(df['close'].iloc[-2]) if len(df) > 1 else current_price
     change = current_price - prev_close
+    change_pct = (change / prev_close) * 100 if prev_close > 0 else 0.0
     chart_data = [float(x) for x in df['close'].tail(20).tolist()]
 
     # Pre-cache 2-year daily chart data in RAM for instant 0.001s loading on UI click
