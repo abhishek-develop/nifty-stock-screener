@@ -786,13 +786,12 @@
             }
         }
 
-        let loadCachedRetries = 0;
+        let isPolling = false;
         async function loadCached() {
             const sel = document.getElementById('universeSelect');
             let uni = (sel && sel.value) ? sel.value : 'nifty200';
             if (!uni) uni = 'nifty200';
 
-            document.getElementById('scanStatusText').innerText = `Loading ${uni}...`;
             try {
                 const res = await fetch(`/api/results/${uni}`);
                 const data = await res.json();
@@ -802,14 +801,17 @@
                     renderResults();
 
                     if (currentResults.length > 0) {
-                        loadCachedRetries = 0;
+                        isPolling = false;
                         document.getElementById('scanStatusText').innerText = data.last_scan ? `Last scan: ${new Date(data.last_scan).toLocaleTimeString()}` : "Ready";
-                    } else if (data.is_scanning || loadCachedRetries < 8) {
-                        loadCachedRetries++;
+                    } else if (data.is_scanning) {
                         document.getElementById('scanStatusText').innerText = `⏳ Scanning ${uni} universe... Auto-refreshing...`;
-                        setTimeout(loadCached, 3000);
+                        if (!isPolling) {
+                            isPolling = true;
+                            setTimeout(() => { isPolling = false; loadCached(); }, 5000);
+                        }
                     } else {
-                        document.getElementById('scanStatusText').innerText = "No stocks match current filters";
+                        isPolling = false;
+                        document.getElementById('scanStatusText').innerText = "Ready";
                     }
                 }
             } catch(e) {
