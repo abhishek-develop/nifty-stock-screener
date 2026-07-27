@@ -22,14 +22,13 @@ import json
 import os
 import sys
 import threading
-import tempfile
 import csv
 import hashlib
 import time
 from io import StringIO
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
@@ -39,6 +38,7 @@ warnings.filterwarnings('ignore')
 
 app = Flask(__name__)
 CORS(app)
+_app_start_time = time.time()
 
 # ============================================================
 # CONFIGURATION & DYNAMIC UNIVERSE ENGINE
@@ -53,8 +53,19 @@ dynamic_metadata: Dict[str, Dict] = {}
 STOCK_UNIVERSES = {"custom": []}
 CACHE_FILE = 'scan_cache.json'
 scan_cache = {"last_scan": None, "results": {}, "is_scanning": False, "errors": []}
+scan_cache_lock = threading.Lock()
 chart_cache_memory = {}
 CHART_CACHE_TTL = 1800  # 30-minute high-speed RAM chart cache
+
+# OHLCV DataFrame memory cache — avoids re-fetching same ticker across overlapping universes
+ohlcv_cache: Dict[str, Tuple[float, pd.DataFrame]] = {}
+OHLCV_CACHE_TTL = 1800  # 30 minutes
+
+# Global rate limiter for Yahoo Finance API calls
+yahoo_rate_semaphore = threading.Semaphore(2)  # Max 2 concurrent Yahoo requests
+
+# Determine worker count based on environment
+MAX_SCAN_WORKERS = 2 if os.getenv("RENDER") else 4
 
 ZERODHA_API_KEY = os.getenv("ZERODHA_API_KEY", "")
 ZERODHA_API_SECRET = os.getenv("ZERODHA_API_SECRET", "")
@@ -307,7 +318,7 @@ def parse_zerodha_candles(payload: Dict) -> Optional[pd.DataFrame]:
         df = df.set_index("timestamp")
         return df[["open", "high", "low", "close", "volume"]]
     except Exception:
-        None
+        return None
 
 
 def clean_ohlcv(df: pd.DataFrame) -> Optional[pd.DataFrame]:
@@ -339,15 +350,21 @@ USER_AGENTS = [
 
 def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval: str = "1d") -> Optional[pd.DataFrame]:
     """Fetch directly calling Yahoo Finance Chart API with User-Agent and domain rotation."""
-    domains = ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]
+    # Prefer query2 first — it works reliably from cloud IPs (Render)
+    domains = ["query2.finance.yahoo.com", "query1.finance.yahoo.com", "query2.finance.yahoo.com"]
     for attempt in range(3):
-        domain = domains[attempt % len(domains)]
+        domain = domains[attempt]
         ua = USER_AGENTS[(hash(ticker) + attempt) % len(USER_AGENTS)]
         url = f"https://{domain}/v8/finance/chart/{ticker}?range={period}&interval={interval}"
         headers = {"User-Agent": ua}
 
         try:
-            res = requests.get(url, headers=headers, timeout=8)
+            yahoo_rate_semaphore.acquire()
+            try:
+                res = requests.get(url, headers=headers, timeout=8)
+            finally:
+                yahoo_rate_semaphore.release()
+
             if res.status_code != 200:
                 if attempt == 2:
                     print(f"⚠️ Direct Yahoo Chart API failed for {ticker} (HTTP {res.status_code})")
@@ -435,23 +452,33 @@ def fetch_stock_data_zerodha(ticker: str) -> Optional[pd.DataFrame]:
 
 
 def fetch_stock_data(ticker: str, period: str = "2y", interval: str = "1d") -> Optional[pd.DataFrame]:
-    """Fetch historical OHLCV data using Zerodha FIRST if configured, with Yahoo Finance as fallback."""
+    """Fetch historical OHLCV data with in-memory caching to avoid redundant fetches across overlapping universes."""
+    # 0. Check OHLCV memory cache first (avoids re-fetching nifty50 stocks when scanning nifty200)
+    cache_key = f"{ticker}_{period}_{interval}"
+    if cache_key in ohlcv_cache:
+        cached_time, cached_df = ohlcv_cache[cache_key]
+        if time.time() - cached_time < OHLCV_CACHE_TTL:
+            return cached_df
+
     # 1. Try Zerodha FIRST if Zerodha credentials exist
     if ZERODHA_ENCTOKEN or ZERODHA_ACCESS_TOKEN or (ZERODHA_API_KEY and ZERODHA_REQUEST_TOKEN):
         df_zerodha = fetch_stock_data_zerodha(ticker)
         if df_zerodha is not None and not df_zerodha.empty:
+            ohlcv_cache[cache_key] = (time.time(), df_zerodha)
             return df_zerodha
 
     # 2. Fallback to Yahoo Finance (Direct API + yfinance)
     df_yahoo = fetch_stock_data_yahoo(ticker, period, interval)
     if df_yahoo is not None and not df_yahoo.empty:
+        ohlcv_cache[cache_key] = (time.time(), df_yahoo)
         return df_yahoo
 
     # 3. Log clear error when all data providers fail for a ticker
     err_msg = f"🛑 [FETCH FAILED] Could not retrieve stock data for {ticker} from any provider."
     print(err_msg)
-    if err_msg not in scan_cache["errors"]:
-        scan_cache["errors"].append(err_msg)
+    with scan_cache_lock:
+        if len(scan_cache["errors"]) < 100:
+            scan_cache["errors"].append(err_msg)
 
     return None
 
@@ -699,13 +726,24 @@ def fetch_fundamental_metrics(ticker: str) -> Dict:
             summary_text = summary_text[:347] + "..."
 
         metrics["about"] = summary_text
-        metrics["is_fundamentally_sound"] = True
+
+        # Real fundamental soundness filter: exclude stocks with negative EPS + negative ROE + extreme debt
+        eps_val = metrics.get("eps")
+        roe_val = metrics.get("roe")
+        de_val = metrics.get("debt_to_equity")
+        is_sound = True
+        if eps_val is not None and eps_val <= 0:
+            if roe_val is not None and roe_val < 0:
+                is_sound = False  # Loss-making with negative returns
+        if de_val is not None and de_val > 200:
+            is_sound = False  # Extremely over-leveraged
+        metrics["is_fundamentally_sound"] = is_sound
 
     except Exception:
         pass
 
     fundamental_cache[clean_sym] = metrics
-    save_fundamental_cache()
+    # NOTE: fundamental_cache is saved in batch after universe scan completes, not per-stock
     return metrics
 
 
@@ -803,6 +841,8 @@ def calculate_vcp_score(df: pd.DataFrame) -> Optional[Dict]:
     low_52w = float(df["low"].min())
 
     trend_score = 0
+    # Penalize stocks with insufficient price history for reliable MA calculations
+    has_full_history = len(df) >= 200
     if current_price > ma50: trend_score += 6
     if current_price > ma150: trend_score += 5
     if current_price > ma200: trend_score += 5
@@ -810,6 +850,8 @@ def calculate_vcp_score(df: pd.DataFrame) -> Optional[Dict]:
     if ma150 > ma200: trend_score += 4
     if low_52w > 0 and (current_price >= 1.20 * low_52w): trend_score += 3
     if high_52w > 0 and (current_price >= 0.75 * high_52w): trend_score += 2
+    if not has_full_history:
+        trend_score = max(0, trend_score - 5)  # Penalize unreliable MA template
 
     # === CONTRACTION WAVE PATTERN (25 POINTS MAX) ===
     n = len(df)
@@ -1184,7 +1226,7 @@ def scan_universe(tickers: List[str], min_score: int = 0,
             scan_cache["errors"].append(f"{ticker}: {str(e)}")
         return None
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=MAX_SCAN_WORKERS) as executor:
         futures = {executor.submit(_worker, ticker): ticker for ticker in tickers}
         for future in as_completed(futures):
             res = future.result()
@@ -1254,21 +1296,27 @@ def scan_single_universe_bg(universe_name: str):
 def auto_scan():
     """Run scheduled scan for all dynamic universes."""
     print(f"\n🔄 Auto-scan started at {datetime.now()}")
-    scan_cache["is_scanning"] = True
+    with scan_cache_lock:
+        scan_cache["is_scanning"] = True
+        scan_cache["errors"] = []
 
     try:
         for universe_name in ["nifty50", "nifty200", "nifty500", "smallcap", "ipo", "nse_all"]:
             tickers = get_stock_universe(universe_name)
             print(f"  Scanning dynamic {universe_name} ({len(tickers)} stocks)...")
             results = scan_universe(tickers, min_score=0)
-            scan_cache["results"][universe_name] = results
+            with scan_cache_lock:
+                scan_cache["results"][universe_name] = results
             print(f"  ✓ {universe_name}: {len(results)} analyzed")
 
-        scan_cache["last_scan"] = datetime.now().isoformat()
+        with scan_cache_lock:
+            scan_cache["last_scan"] = datetime.now().isoformat()
         save_cache()
+        save_fundamental_cache()  # Batch write after full scan
         print(f"✅ Auto-scan complete at {datetime.now()}\n")
     finally:
-        scan_cache["is_scanning"] = False
+        with scan_cache_lock:
+            scan_cache["is_scanning"] = False
 
 
 load_cache()
@@ -1281,8 +1329,43 @@ if os.getenv("VCP_DISABLE_SCHEDULER") != "1":
     scheduler.start()
 
     if os.getenv("VCP_SKIP_INITIAL_SCAN") != "1":
-        print("Running initial background scan...")
-        threading.Thread(target=auto_scan, daemon=True).start()
+        def staggered_initial_scan():
+            """Scan priority universes first, then defer larger ones."""
+            print("Running initial background scan (priority universes first)...")
+            with scan_cache_lock:
+                scan_cache["is_scanning"] = True
+                scan_cache["errors"] = []
+            try:
+                # Phase 1: Priority universes (fast)
+                for uni in ["nifty50", "nifty200"]:
+                    tickers = get_stock_universe(uni)
+                    print(f"  ⚡ Priority scan: {uni} ({len(tickers)} stocks)...")
+                    results = scan_universe(tickers, min_score=0)
+                    with scan_cache_lock:
+                        scan_cache["results"][uni] = results
+                        scan_cache["last_scan"] = datetime.now().isoformat()
+                    save_cache()
+                    print(f"  ✓ {uni}: {len(results)} analyzed")
+
+                # Phase 2: Remaining universes (deferred)
+                time.sleep(10)  # Brief pause to let server stabilize
+                for uni in ["nifty500", "smallcap", "ipo", "nse_all"]:
+                    tickers = get_stock_universe(uni)
+                    print(f"  Scanning {uni} ({len(tickers)} stocks)...")
+                    results = scan_universe(tickers, min_score=0)
+                    with scan_cache_lock:
+                        scan_cache["results"][uni] = results
+                        scan_cache["last_scan"] = datetime.now().isoformat()
+                    save_cache()
+                    print(f"  ✓ {uni}: {len(results)} analyzed")
+
+                save_fundamental_cache()  # Batch write after full scan
+                print(f"✅ Initial scan complete at {datetime.now()}")
+            finally:
+                with scan_cache_lock:
+                    scan_cache["is_scanning"] = False
+
+        threading.Thread(target=staggered_initial_scan, daemon=True).start()
 
 
 # ============================================================
@@ -1545,6 +1628,29 @@ def api_status():
         "errors": scan_cache["errors"][-10:],
         "cached_universes": list(scan_cache["results"].keys()),
         "next_scan": "Every 30 min (9:15 AM - 3:30 PM IST, Mon-Fri)"
+    })
+
+
+@app.route('/api/health')
+def api_health():
+    """Health check endpoint for Render monitoring."""
+    import resource
+    mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024)  # macOS gives bytes
+    if sys.platform == 'linux':
+        mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # Linux gives KB
+
+    cached_counts = {k: len(v) for k, v in scan_cache["results"].items()}
+    return jsonify({
+        "status": "healthy",
+        "uptime_seconds": round(time.time() - _app_start_time, 0),
+        "memory_mb": round(mem_mb, 1),
+        "is_scanning": scan_cache["is_scanning"],
+        "last_scan": scan_cache["last_scan"],
+        "ohlcv_cache_size": len(ohlcv_cache),
+        "chart_cache_size": len(chart_cache_memory),
+        "fundamental_cache_size": len(fundamental_cache),
+        "cached_universe_counts": cached_counts,
+        "error_count": len(scan_cache["errors"]),
     })
 
 

@@ -500,6 +500,23 @@
                 grid-template-columns: 1fr;
             }
         }
+
+        /* Skeleton loading animation */
+        .skeleton-row {
+            height: 3rem;
+            margin: 0.4rem 1rem;
+            border-radius: 0.5rem;
+            background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+            background-size: 200% 100%;
+            animation: skeleton-shimmer 1.5s ease-in-out infinite;
+        }
+        @keyframes skeleton-shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        /* Mobile-friendly table scroll */
+        .table-card { overflow-x: auto; }
     </style>
 </head>
 <body>
@@ -617,7 +634,15 @@
                     </tr>
                 </thead>
                 <tbody id="resultsTableBody">
-                    <tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);"><span class="loader"></span> &nbsp; Loading stock data...</td></tr>
+                    <tr>
+                        <td colspan="11" style="text-align:center; padding:0;">
+                            <div class="skeleton-row"></div>
+                            <div class="skeleton-row" style="animation-delay:0.1s;"></div>
+                            <div class="skeleton-row" style="animation-delay:0.2s;"></div>
+                            <div class="skeleton-row" style="animation-delay:0.3s;"></div>
+                            <div class="skeleton-row" style="animation-delay:0.4s;"></div>
+                        </td>
+                    </tr>
                 </tbody>
             </table>
         </div>
@@ -751,6 +776,8 @@
         let lwChart = null;
         let candleSeriesRef = null;
         let activeModalView = 'chart';
+        // Client-side universe result cache to avoid redundant API calls
+        const universeResultCache = new Map();
 
         async function loadUniverses() {
             try {
@@ -787,10 +814,23 @@
         }
 
         let isPolling = false;
-        async function loadCached() {
+        async function loadCached(forceRefresh = false) {
             const sel = document.getElementById('universeSelect');
             let uni = (sel && sel.value) ? sel.value : 'nifty200';
             if (!uni) uni = 'nifty200';
+
+            // Check client-side cache first (instant switch between already-loaded universes)
+            if (!forceRefresh && universeResultCache.has(uni)) {
+                const cached = universeResultCache.get(uni);
+                if (Date.now() - cached.time < 120000) {  // 2-minute client cache
+                    currentResults = cached.results;
+                    populateSectors();
+                    renderResults();
+                    document.getElementById('scanStatusText').innerText =
+                        `${currentResults.length} stocks • ` + (cached.lastScan ? `Last scan: ${new Date(cached.lastScan).toLocaleTimeString()}` : 'Ready');
+                    return;
+                }
+            }
 
             try {
                 const res = await fetch(`/api/results/${uni}`);
@@ -802,21 +842,23 @@
 
                     if (currentResults.length > 0) {
                         isPolling = false;
-                        document.getElementById('scanStatusText').innerText = data.last_scan ? `Last scan: ${new Date(data.last_scan).toLocaleTimeString()}` : "Ready";
+                        universeResultCache.set(uni, { results: currentResults, lastScan: data.last_scan, time: Date.now() });
+                        document.getElementById('scanStatusText').innerText =
+                            `${currentResults.length} stocks • ` + (data.last_scan ? `Last scan: ${new Date(data.last_scan).toLocaleTimeString()}` : 'Ready');
                     } else if (data.is_scanning) {
                         document.getElementById('scanStatusText').innerText = `⏳ Scanning ${uni} universe... Auto-refreshing...`;
                         if (!isPolling) {
                             isPolling = true;
-                            setTimeout(() => { isPolling = false; loadCached(); }, 5000);
+                            setTimeout(() => { isPolling = false; loadCached(true); }, 5000);
                         }
                     } else {
                         isPolling = false;
-                        document.getElementById('scanStatusText').innerText = "Ready";
+                        document.getElementById('scanStatusText').innerText = 'Ready';
                     }
                 }
             } catch(e) {
-                console.error("loadCached error:", e);
-                document.getElementById('scanStatusText').innerText = "Error loading data";
+                console.error('loadCached error:', e);
+                document.getElementById('scanStatusText').innerText = 'Error loading data';
             }
         }
 
@@ -1096,7 +1138,7 @@
 
             let filtered = dataset.filter(r => {
                 if (r.vcp_score < minScore) return false;
-                if (hideWeak && r.status === 'weak' && r.vcp_score < 30) return false;
+                if (hideWeak && (r.status === 'weak' || r.vcp_score < 40)) return false;
                 if (activeTab !== 'ALL' && activeTab !== 'top_picks' && r.status !== activeTab) return false;
                 if (sector !== 'ALL' && r.sector !== sector) return false;
                 if (search && !r.ticker.toUpperCase().includes(search) && !r.name.toUpperCase().includes(search)) return false;
