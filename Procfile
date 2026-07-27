@@ -1,1 +1,1 @@
-web: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 8 --worker-class gthread
+web: gunicorn app:app --bind 0.0.0.0:$PORT --threads 8

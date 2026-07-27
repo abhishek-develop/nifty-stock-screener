@@ -387,12 +387,18 @@ def fetch_stock_data_yahoo(ticker: str, period: str = "2y", interval: str = "1d"
 
     # 2. Fallback to yfinance
     try:
-        df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False, threads=False)
+        with open(os.devnull, 'w') as devnull:
+            old_stderr = sys.stderr
+            sys.stderr = devnull
+            try:
+                df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False, threads=False)
+            finally:
+                sys.stderr = old_stderr
         cleaned = clean_ohlcv(df)
         if cleaned is not None and not cleaned.empty:
             return cleaned
-    except Exception as exc:
-        print(f"❌ yfinance download failed for {ticker}: {exc}")
+    except Exception:
+        pass
 
     return None
 
