@@ -1515,6 +1515,160 @@ def api_top_picks():
     })
 
 
+def calculate_ipo_breakout_analysis(stock) -> Tuple[int, str, str, str]:
+    """
+    Evaluate Cup & Handle, Rounding Bottom, Listing High Breakout, and IPO VCP patterns for an IPO stock.
+    Returns: (ipo_score, pattern_tag, pattern_grade, conviction_reason)
+    """
+    ticker = getattr(stock, 'ticker', '') if hasattr(stock, 'ticker') else stock.get('ticker', '')
+    full_ticker = f"{ticker}.NS" if not ticker.endswith('.NS') else ticker
+    
+    # Read pre-fetched DataFrame from memory cache to ensure instant 0.0001s response
+    cache_key = f"{full_ticker}_2y_1d"
+    cached_tuple = ohlcv_cache.get(cache_key)
+    df = cached_tuple[1] if cached_tuple else None
+    
+    current_price = getattr(stock, 'price', 0.0) if hasattr(stock, 'price') else float(stock.get('price', 0.0))
+    res_level = getattr(stock, 'resistance_level', 0.0) if hasattr(stock, 'resistance_level') else float(stock.get('resistance_level', 0.0))
+    dist_pct = getattr(stock, 'breakout_distance_pct', 999.0) if hasattr(stock, 'breakout_distance_pct') else float(stock.get('breakout_distance_pct', 999.0))
+    vol_ratio = getattr(stock, 'volume_ratio', 1.0) if hasattr(stock, 'volume_ratio') else float(stock.get('volume_ratio', 1.0))
+    dry_up = getattr(stock, 'dry_up_ratio', 1.0) if hasattr(stock, 'dry_up_ratio') else float(stock.get('dry_up_ratio', 1.0))
+    status = getattr(stock, 'status', 'forming') if hasattr(stock, 'status') else stock.get('status', 'forming')
+    risk_pct = getattr(stock, 'risk_pct', 5.0) if hasattr(stock, 'risk_pct') else float(stock.get('risk_pct', 5.0))
+    vcp_score = getattr(stock, 'vcp_score', 0) if hasattr(stock, 'vcp_score') else stock.get('vcp_score', 0)
+
+    listing_high = current_price
+    is_rounding_bottom = False
+    is_cup_and_handle = False
+    is_listing_breakout = False
+
+    if df is not None and not df.empty:
+        listing_high = float(df['high'].max())
+        n = len(df)
+        
+        # 1. Listing High / All-Time High Breakout check
+        if current_price >= 0.96 * listing_high:
+            is_listing_breakout = True
+
+        # 2. Cup & Handle check (U-shape drop & recovery + tight right handle)
+        if n >= 30:
+            peak_price = float(df.head(max(10, int(n * 0.4)))['high'].max())
+            trough_price = float(df['low'].min())
+            cup_depth = ((peak_price - trough_price) / peak_price * 100) if peak_price > 0 else 0
+            
+            recent_15 = df.tail(15)
+            handle_tightness = float((recent_15['close'].std() / current_price) * 100) if current_price > 0 else 999
+            
+            if 10.0 <= cup_depth <= 48.0 and current_price >= 0.86 * peak_price and (handle_tightness < 4.0 or dry_up < 0.85):
+                is_cup_and_handle = True
+
+        # 3. Rounding Bottom check (smooth curve recovery from post-listing low)
+        if n >= 20 and not is_cup_and_handle:
+            past_low = float(df['low'].min())
+            recovery_pct = ((current_price - past_low) / past_low * 100) if past_low > 0 else 0
+            if recovery_pct >= 15.0 and current_price >= 0.82 * listing_high:
+                is_rounding_bottom = True
+
+    # Pattern Tag & Grade Determination
+    if is_listing_breakout and (status == 'breakout' or vol_ratio >= 1.2 or current_price >= listing_high * 0.99):
+        pattern_tag = "🚀 Listing High Breakout"
+        pattern_grade = "🚀 IPO ATH Breakout"
+        reason = f"Breaking out past listing high (₹{listing_high:.2f}) on {vol_ratio:.1f}x volume"
+        pattern_score = 35
+    elif is_cup_and_handle:
+        pattern_tag = "☕ Cup & Handle"
+        pattern_grade = "☕ Cup & Handle Setup"
+        reason = f"Cup & Handle base • Coiled {dist_pct:.1f}% below pivot resistance (₹{res_level:.2f})"
+        pattern_score = 32
+    elif is_rounding_bottom:
+        pattern_tag = "🔄 Rounding Bottom"
+        pattern_grade = "🔄 Rounding Bottom Base"
+        reason = f"Rounding U-shape bottom • Recovery towards upper resistance (₹{res_level:.2f})"
+        pattern_score = 28
+    else:
+        pattern_tag = "⚡ IPO VCP Base"
+        pattern_grade = "⚡ IPO Consolidation"
+        reason = f"Tight IPO base consolidation • Pivot resistance at ₹{res_level:.2f}"
+        pattern_score = 22
+
+    # Total Score Calculation (0-100)
+    score = pattern_score
+    if status == 'breakout': score += 25
+    elif status == 'ready' or dist_pct <= 3.0: score += 20
+    elif dist_pct <= 6.0: score += 12
+    
+    if vol_ratio >= 1.5 or dry_up <= 0.65: score += 20
+    elif dry_up <= 0.85: score += 10
+    
+    if risk_pct <= 4.0: score += 15
+    elif risk_pct <= 6.0: score += 10
+    
+    if vcp_score >= 60: score += 10
+
+    final_score = int(min(100, max(0, round(score))))
+    return final_score, pattern_tag, pattern_grade, reason
+
+
+@app.route('/api/results/ipo_breakouts')
+def api_ipo_breakouts():
+    """Get high-probability IPO Breakout setups (Cup & Handle, Rounding Bottom, Listing High Breakouts, VCP)."""
+    candidates = []
+    seen_tickers = set()
+
+    # 1. Primary source: dedicated 'ipo' universe candidates
+    ipo_raw = scan_cache["results"].get("ipo", [])
+    
+    # 2. Secondary source: scan candidates across all dynamic universes for recent listing dates
+    all_scanned = []
+    for u in ["nifty50", "nifty200", "nifty500", "smallcap", "nse_all"]:
+        all_scanned.extend(scan_cache["results"].get(u, []))
+
+    combined = list(ipo_raw) + all_scanned
+    cutoff_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+
+    for stock in combined:
+        t = getattr(stock, 'ticker', '') if hasattr(stock, 'ticker') else stock.get('ticker', '')
+        if not t or t in seen_tickers:
+            continue
+            
+        clean_t = normalize_ticker(t)
+        meta = dynamic_metadata.get(clean_t, {})
+        listing_date = meta.get("listing_date", "")
+
+        # Check IPO qualification
+        is_ipo = (stock in ipo_raw) or (listing_date and listing_date >= cutoff_date)
+        if not is_ipo:
+            cache_key = f"{clean_t}.NS_2y_1d"
+            if cache_key in ohlcv_cache and len(ohlcv_cache[cache_key][1]) < 500:
+                is_ipo = True
+
+        if is_ipo:
+            seen_tickers.add(t)
+            score, tag, grade, reason = calculate_ipo_breakout_analysis(stock)
+            s_dict = serialize_result(stock)
+            s_dict["vcp_score"] = score  # Override rating display
+            s_dict["vcp_grade"] = f"{tag} ({score} pts)"
+            s_dict["top_category_tag"] = tag
+            s_dict["conviction_reason"] = reason
+            candidates.append((score, s_dict))
+
+    # Auto-trigger scan of 'ipo' universe if empty
+    if not candidates and not scan_cache.get("scanning_ipo", False):
+        threading.Thread(target=scan_single_universe_bg, args=("ipo",), daemon=True).start()
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    results = [s_dict for score, s_dict in candidates]
+
+    return jsonify({
+        "success": True,
+        "universe": "ipo_breakouts",
+        "matches": len(results),
+        "last_scan": scan_cache["last_scan"],
+        "is_scanning": scan_cache.get("scanning_ipo", False) or scan_cache["is_scanning"],
+        "results": results
+    })
+
+
 @app.route('/api/results/<universe>')
 def api_results(universe):
     """Get cached results. Auto-trigger scan if empty."""

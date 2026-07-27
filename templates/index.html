@@ -258,6 +258,18 @@
             box-shadow: 0 2px 10px rgba(217, 119, 6, 0.3);
         }
 
+        .tab-btn.tab-ipo-breakouts {
+            background: rgba(124, 58, 237, 0.08);
+            border-color: rgba(124, 58, 237, 0.3);
+            color: var(--accent-purple);
+        }
+        .tab-btn.tab-ipo-breakouts.active {
+            background: linear-gradient(135deg, #7c3aed, #6d28d9);
+            color: white;
+            border-color: var(--accent-purple);
+            box-shadow: 0 2px 10px rgba(124, 58, 237, 0.3);
+        }
+
         .filter-toggle {
             display: flex;
             align-items: center;
@@ -602,6 +614,7 @@
         <!-- FILTER TABS NAV -->
         <div class="tab-bar">
             <button class="tab-btn tab-top-picks" onclick="switchTab('top_picks', this)">🔥 Top 10 Best Swing Trades</button>
+            <button class="tab-btn tab-ipo-breakouts" onclick="switchTab('ipo_breakouts', this)">🐣 IPO Breakouts</button>
             <button class="tab-btn active" onclick="switchTab('ALL', this)">🌟 All Scanned Setups</button>
             <button class="tab-btn" onclick="switchTab('ready', this)">🎯 Pivoting / Ready</button>
             <button class="tab-btn" onclick="switchTab('breakout', this)">🚀 Breakout Confirmed</button>
@@ -769,6 +782,7 @@
     <script>
         let currentResults = [];
         let topPicksResults = [];
+        let ipoBreakoutsResults = [];
         let activeTab = 'ALL';
         let currentSort = { col: 'vcp_score', dir: 'desc' };
         let activeStock = null;
@@ -879,6 +893,23 @@
             }
         }
 
+        async function loadIpoBreakouts() {
+            document.getElementById('scanStatusText').innerText = "Analyzing recent IPO patterns & breakouts...";
+            try {
+                const res = await fetch('/api/results/ipo_breakouts');
+                const data = await res.json();
+                if (data.success) {
+                    ipoBreakoutsResults = data.results || [];
+                    populateSectors();
+                    renderResults();
+                    document.getElementById('scanStatusText').innerText = `Loaded ${ipoBreakoutsResults.length} IPO Breakout setups`;
+                }
+            } catch(e) {
+                console.error("loadIpoBreakouts error:", e);
+                document.getElementById('scanStatusText').innerText = "Failed to load IPO Breakouts";
+            }
+        }
+
         async function runScan() {
             const btn = document.getElementById('scanBtn');
             const sel = document.getElementById('universeSelect');
@@ -910,7 +941,7 @@
         }
 
         function populateSectors() {
-            const allItems = [...currentResults, ...topPicksResults];
+            const allItems = [...currentResults, ...topPicksResults, ...ipoBreakoutsResults];
             const sectors = new Set(allItems.map(r => r.sector).filter(Boolean));
             const sel = document.getElementById('sectorSelect');
             const curr = sel.value;
@@ -932,11 +963,14 @@
                 else if (tab === 'ready') th.innerHTML = 'Pivot Rating ↕';
                 else if (tab === 'forming') th.innerHTML = 'Base Quality Rating ↕';
                 else if (tab === 'top_picks') th.innerHTML = 'Conviction Rating ↕';
+                else if (tab === 'ipo_breakouts') th.innerHTML = 'IPO Rating ↕';
                 else th.innerHTML = 'VCP Rating ↕';
             }
 
             if (tab === 'top_picks') {
                 await loadTopPicks();
+            } else if (tab === 'ipo_breakouts') {
+                await loadIpoBreakouts();
             } else {
                 renderResults();
             }
@@ -958,12 +992,12 @@
             const minScore = parseInt(document.getElementById('minScoreInput').value) || 0;
             const hideWeak = document.getElementById('hideWeakToggle').checked;
 
-            const dataset = activeTab === 'top_picks' ? topPicksResults : currentResults;
+            const dataset = activeTab === 'top_picks' ? topPicksResults : (activeTab === 'ipo_breakouts' ? ipoBreakoutsResults : currentResults);
 
             let filtered = dataset.filter(r => {
                 if (r.vcp_score < minScore) return false;
                 if (hideWeak && (r.status === 'weak' || r.vcp_score < 40)) return false;
-                if (activeTab !== 'ALL' && activeTab !== 'top_picks' && r.status !== activeTab) return false;
+                if (activeTab !== 'ALL' && activeTab !== 'top_picks' && activeTab !== 'ipo_breakouts' && r.status !== activeTab) return false;
                 if (sector !== 'ALL' && r.sector !== sector) return false;
                 if (search && !r.ticker.toUpperCase().includes(search) && !r.name.toUpperCase().includes(search)) return false;
                 return true;
@@ -993,6 +1027,11 @@
                     tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">
                         <div>No stocks available for this selection.</div>
                         <button class="btn-primary" style="margin:1rem auto 0 auto;" onclick="runScan()">⚡ Scan Universe Now</button>
+                    </td></tr>`;
+                } else if (activeTab === 'ipo_breakouts') {
+                    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">
+                        <div>🐣 No active IPO Breakout patterns detected right now.</div>
+                        <div style="font-size:0.8rem; margin-top:0.4rem;">Select <strong>'Recent IPOs & Listings'</strong> from the Universe dropdown to view all recent IPO listings.</div>
                     </td></tr>`;
                 } else if (activeTab === 'breakout') {
                     tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">
@@ -1040,7 +1079,7 @@
 
                 const cleanTicker = r.ticker.replace(/[^a-zA-Z0-9_-]/g, '');
                 const categoryBadge = r.top_category_tag 
-                    ? `<span style="background:rgba(217, 119, 6, 0.1); color:var(--accent-amber); border:1px solid rgba(217, 119, 6, 0.3); font-size:0.7rem; font-weight:700; padding:0.15rem 0.4rem; border-radius:0.3rem; display:inline-block;">${r.top_category_tag}</span>`
+                    ? `<span style="background:rgba(124, 58, 237, 0.1); color:var(--accent-purple); border:1px solid rgba(124, 58, 237, 0.3); font-size:0.7rem; font-weight:700; padding:0.15rem 0.4rem; border-radius:0.3rem; display:inline-block;">${r.top_category_tag}</span>`
                     : '';
 
                 return `
@@ -1075,6 +1114,7 @@
         function openStockChartByTicker(ticker) {
             let stock = currentResults.find(r => r.ticker === ticker);
             if (!stock) stock = topPicksResults.find(r => r.ticker === ticker);
+            if (!stock) stock = ipoBreakoutsResults.find(r => r.ticker === ticker);
             if (!stock) return;
             openStockChart(stock);
         }
@@ -1134,12 +1174,12 @@
             const minScore = parseInt(document.getElementById('minScoreInput').value) || 0;
             const hideWeak = document.getElementById('hideWeakToggle').checked;
 
-            const dataset = activeTab === 'top_picks' ? topPicksResults : currentResults;
+            const dataset = activeTab === 'top_picks' ? topPicksResults : (activeTab === 'ipo_breakouts' ? ipoBreakoutsResults : currentResults);
 
             let filtered = dataset.filter(r => {
                 if (r.vcp_score < minScore) return false;
                 if (hideWeak && (r.status === 'weak' || r.vcp_score < 40)) return false;
-                if (activeTab !== 'ALL' && activeTab !== 'top_picks' && r.status !== activeTab) return false;
+                if (activeTab !== 'ALL' && activeTab !== 'top_picks' && activeTab !== 'ipo_breakouts' && r.status !== activeTab) return false;
                 if (sector !== 'ALL' && r.sector !== sector) return false;
                 if (search && !r.ticker.toUpperCase().includes(search) && !r.name.toUpperCase().includes(search)) return false;
                 return true;
