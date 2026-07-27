@@ -348,6 +348,8 @@ def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval:
         try:
             res = requests.get(url, headers=headers, timeout=8)
             if res.status_code != 200:
+                if attempt == 2:
+                    print(f"⚠️ Direct Yahoo Chart API failed for {ticker} (HTTP {res.status_code})")
                 time.sleep(0.15 * (attempt + 1))
                 continue
 
@@ -373,8 +375,8 @@ def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval:
 
             return clean_ohlcv(df)
         except Exception as exc:
-            if attempt == 1:
-                print(f"❌ Direct Yahoo Chart API error for {ticker}: {exc}")
+            if attempt == 2:
+                print(f"⚠️ Direct Yahoo Chart API error for {ticker}: {exc}")
     return None
 
 
@@ -397,8 +399,10 @@ def fetch_stock_data_yahoo(ticker: str, period: str = "2y", interval: str = "1d"
         cleaned = clean_ohlcv(df)
         if cleaned is not None and not cleaned.empty:
             return cleaned
-    except Exception:
-        pass
+        else:
+            print(f"⚠️ yfinance download returned empty data for {ticker}")
+    except Exception as exc:
+        print(f"⚠️ yfinance download failed for {ticker}: {exc}")
 
     return None
 
@@ -438,7 +442,17 @@ def fetch_stock_data(ticker: str, period: str = "2y", interval: str = "1d") -> O
             return df_zerodha
 
     # 2. Fallback to Yahoo Finance (Direct API + yfinance)
-    return fetch_stock_data_yahoo(ticker, period, interval)
+    df_yahoo = fetch_stock_data_yahoo(ticker, period, interval)
+    if df_yahoo is not None and not df_yahoo.empty:
+        return df_yahoo
+
+    # 3. Log clear error when all data providers fail for a ticker
+    err_msg = f"🛑 [FETCH FAILED] Could not retrieve stock data for {ticker} from any provider."
+    print(err_msg)
+    if err_msg not in scan_cache["errors"]:
+        scan_cache["errors"].append(err_msg)
+
+    return None
 
 
 # ============================================================
