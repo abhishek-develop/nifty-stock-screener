@@ -918,16 +918,12 @@
 
             let filtered = dataset.filter(r => {
                 if (r.vcp_score < minScore) return false;
-                if (hideWeak && r.status === 'weak' && r.vcp_score < 30) return false;
+                if (hideWeak && (r.status === 'weak' || r.vcp_score < 40)) return false;
                 if (activeTab !== 'ALL' && activeTab !== 'top_picks' && r.status !== activeTab) return false;
                 if (sector !== 'ALL' && r.sector !== sector) return false;
                 if (search && !r.ticker.toUpperCase().includes(search) && !r.name.toUpperCase().includes(search)) return false;
                 return true;
             });
-
-            if (filtered.length === 0 && dataset.length > 0 && activeTab === 'ALL' && !search && sector === 'ALL') {
-                filtered = [...dataset];
-            }
 
             document.getElementById('statTotal').innerText = currentResults.length;
             document.getElementById('statReady').innerText = currentResults.filter(r => r.status === 'ready').length;
@@ -958,6 +954,11 @@
                     tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">
                         <div>🚀 No confirmed volume breakouts in this universe right now.</div>
                         <div style="font-size:0.8rem; margin-top:0.4rem;">Check 'Pivoting / Ready' for stocks coiled tight near pivot resistance.</div>
+                    </td></tr>`;
+                } else if (hideWeak && dataset.length > 0) {
+                    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">
+                        <div>📌 All stocks in this selection are developing bases (<40 VCP Rating).</div>
+                        <div style="font-size:0.8rem; margin-top:0.4rem;">Uncheck <strong>'Hide Developing Bases'</strong> to view developing consolidations.</div>
                     </td></tr>`;
                 } else {
                     tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">No stocks match the selected search/sector filters.</td></tr>`;
