@@ -369,10 +369,15 @@ def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval:
             finally:
                 yahoo_rate_semaphore.release()
 
+            if res.status_code == 429:
+                # Rate limit hit — exponential backoff before retry
+                time.sleep(0.6 * (attempt + 1))
+                continue
+
             if res.status_code != 200:
                 if attempt == 2:
                     print(f"⚠️ Direct Yahoo Chart API failed for {ticker} (HTTP {res.status_code})")
-                time.sleep(0.15 * (attempt + 1))
+                time.sleep(0.2 * (attempt + 1))
                 continue
 
             data = res.json()
@@ -399,6 +404,7 @@ def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval:
         except Exception as exc:
             if attempt == 2:
                 print(f"⚠️ Direct Yahoo Chart API error for {ticker}: {exc}")
+            time.sleep(0.3 * (attempt + 1))
     return None
 
 
@@ -1429,7 +1435,7 @@ if os.getenv("VCP_DISABLE_SCHEDULER") != "1":
                 scan_cache["errors"] = []
             try:
                 # Phase 1: Priority universes (fast)
-                for uni in ["nifty50", "nifty200"]:
+                for uni in ["nifty50", "nifty200", "ipo"]:
                     tickers = get_stock_universe(uni)
                     print(f"  ⚡ Priority scan: {uni} ({len(tickers)} stocks)...")
                     results = scan_universe(tickers, min_score=0)
@@ -1440,8 +1446,8 @@ if os.getenv("VCP_DISABLE_SCHEDULER") != "1":
                     print(f"  ✓ {uni}: {len(results)} analyzed")
 
                 # Phase 2: Remaining universes (deferred)
-                time.sleep(10)  # Brief pause to let server stabilize
-                for uni in ["nifty500", "smallcap", "ipo", "nse_all"]:
+                time.sleep(5)  # Brief pause to let server stabilize
+                for uni in ["nifty500", "smallcap", "nse_all"]:
                     tickers = get_stock_universe(uni)
                     print(f"  Scanning {uni} ({len(tickers)} stocks)...")
                     results = scan_universe(tickers, min_score=0)
@@ -1742,13 +1748,13 @@ def api_ipo_breakouts():
 
 @app.route('/api/results/<universe>')
 def get_results(universe):
-    """Get cached results. Auto-trigger scan if empty."""
+    """Get cached results. Auto-trigger background scan if empty for requested universe."""
     results = scan_cache["results"].get(universe, [])
-    is_bg_scanning = scan_cache.get(f"scanning_{universe}", False) or scan_cache["is_scanning"]
+    is_universe_scanning = scan_cache.get(f"scanning_{universe}", False)
 
-    if not results and not is_bg_scanning:
+    if not results and not is_universe_scanning:
         threading.Thread(target=scan_single_universe_bg, args=(universe,), daemon=True).start()
-        is_bg_scanning = True
+        is_universe_scanning = True
 
     serialized = [serialize_result(r) for r in results]
     evaluated = process_universe_fundamental_scores(serialized)
@@ -1758,7 +1764,7 @@ def get_results(universe):
         "universe": universe,
         "matches": len(evaluated),
         "last_scan": scan_cache["last_scan"],
-        "is_scanning": is_bg_scanning,
+        "is_scanning": is_universe_scanning,
         "results": evaluated
     })
 
