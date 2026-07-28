@@ -27,13 +27,17 @@ import hashlib
 import time
 from io import StringIO
 from datetime import datetime, timedelta
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import List, Dict, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 import yfinance as yf
+import werkzeug.serving
 import warnings
+from fundamental_scoring_engine import InstitutionalFundamentalScoringEngine
+
+fundamental_engine = InstitutionalFundamentalScoringEngine()
 warnings.filterwarnings('ignore')
 
 app = Flask(__name__)
@@ -531,14 +535,29 @@ class VCPResult:
     profit_margin_pct: Optional[float]
     is_fundamentally_sound: bool
     fundamental_score: int
-    about: str
-    industry: str
-    market_cap_cr: Optional[float]
-    pros: List[str]
-    cons: List[str]
-    chart_data: List[float]
-    evidence: List[str]
-    last_updated: str
+    fundamental_rank: int = 1
+    fundamental_tier: str = "Good"
+    fundamental_color: str = "#34d399"
+    profitability_score: float = 50.0
+    growth_score: float = 50.0
+    financial_strength_score: float = 50.0
+    valuation_score: float = 50.0
+    cash_flow_score: float = 50.0
+    management_score: float = 50.0
+    stability_score: float = 50.0
+    bonus: float = 0.0
+    penalty: float = 0.0
+    bonus_reasons: List[str] = field(default_factory=list)
+    penalty_reasons: List[str] = field(default_factory=list)
+    metric_percentiles: Dict[str, float] = field(default_factory=dict)
+    about: str = ""
+    industry: str = ""
+    market_cap_cr: Optional[float] = None
+    pros: List[str] = field(default_factory=list)
+    cons: List[str] = field(default_factory=list)
+    chart_data: List[float] = field(default_factory=list)
+    evidence: List[str] = field(default_factory=list)
+    last_updated: str = ""
 
 
 # ============================================================
@@ -1319,27 +1338,14 @@ def scan_universe(tickers: List[str], min_score: int = 0,
 def serialize_result(result):
     """Convert scan rows into JSON-safe dictionaries."""
     d = asdict(result) if isinstance(result, VCPResult) else (dict(result) if isinstance(result, dict) else {})
-    if d and (d.get("fundamental_score") is None or d.get("fundamental_score") == 0):
-        roe = d.get("roe_pct")
-        margin = d.get("profit_margin_pct")
-        pe = d.get("pe_ratio")
-        is_sound = d.get("is_fundamentally_sound", False)
-        f_score = 0
-        if roe is not None:
-            if roe >= 25.0: f_score += 40
-            elif roe >= 18.0: f_score += 32
-            elif roe >= 12.0: f_score += 22
-            elif roe >= 5.0: f_score += 12
-            elif roe > 0: f_score += 5
-        if margin is not None:
-            if margin >= 20.0: f_score += 25
-            elif margin >= 12.0: f_score += 18
-            elif margin >= 5.0: f_score += 12
-            elif margin > 0: f_score += 5
-        if is_sound: f_score += 20
-        if pe is not None and 0 < pe <= 75.0: f_score += 15
-        d["fundamental_score"] = int(min(100, max(0, f_score)))
     return d
+
+
+def process_universe_fundamental_scores(result_dicts: List[Dict]) -> List[Dict]:
+    """Pass universe result dicts through the Institutional Fundamental Scoring Engine."""
+    if not result_dicts:
+        return []
+    return fundamental_engine.evaluate_universe(result_dicts)
 
 
 def load_cache():
@@ -1504,14 +1510,17 @@ def api_scan():
     scan_cache["last_scan"] = datetime.now().isoformat()
     save_cache()
 
+    serialized = [serialize_result(r) for r in results]
+    evaluated = process_universe_fundamental_scores(serialized)
+
     return jsonify({
         "success": True,
         "universe": universe,
         "scanned": len(tickers),
-        "matches": len(results),
+        "matches": len(evaluated),
         "last_scan": scan_cache["last_scan"],
         "errors": scan_cache["errors"][-10:],
-        "results": [serialize_result(r) for r in results]
+        "results": evaluated
     })
 
 
@@ -1601,13 +1610,15 @@ def api_top_picks():
         s_dict["vcp_grade"] = f"🔥 #{rank} Conviction ({score} pts)"
         top_10.append(s_dict)
 
+    evaluated = process_universe_fundamental_scores(top_10)
+
     return jsonify({
         "success": True,
         "universe": "top_picks",
-        "matches": len(top_10),
+        "matches": len(evaluated),
         "last_scan": scan_cache["last_scan"],
         "is_scanning": scan_cache["is_scanning"],
-        "results": top_10
+        "results": evaluated
     })
 
 
@@ -1754,19 +1765,20 @@ def api_ipo_breakouts():
 
     candidates.sort(key=lambda x: x[0], reverse=True)
     results = [s_dict for score, s_dict in candidates]
+    evaluated = process_universe_fundamental_scores(results)
 
     return jsonify({
         "success": True,
         "universe": "ipo_breakouts",
-        "matches": len(results),
+        "matches": len(evaluated),
         "last_scan": scan_cache["last_scan"],
         "is_scanning": scan_cache.get("scanning_ipo", False) or scan_cache["is_scanning"],
-        "results": results
+        "results": evaluated
     })
 
 
 @app.route('/api/results/<universe>')
-def api_results(universe):
+def get_results(universe):
     """Get cached results. Auto-trigger scan if empty."""
     results = scan_cache["results"].get(universe, [])
     is_bg_scanning = scan_cache.get(f"scanning_{universe}", False) or scan_cache["is_scanning"]
@@ -1775,13 +1787,16 @@ def api_results(universe):
         threading.Thread(target=scan_single_universe_bg, args=(universe,), daemon=True).start()
         is_bg_scanning = True
 
+    serialized = [serialize_result(r) for r in results]
+    evaluated = process_universe_fundamental_scores(serialized)
+
     return jsonify({
         "success": True,
         "universe": universe,
-        "matches": len(results),
+        "matches": len(evaluated),
         "last_scan": scan_cache["last_scan"],
         "is_scanning": is_bg_scanning,
-        "results": [serialize_result(r) for r in results]
+        "results": evaluated
     })
 
 
