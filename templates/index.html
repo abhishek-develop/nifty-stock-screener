@@ -812,6 +812,11 @@
                     </div>
                     <p id="fAboutText" style="font-size:0.85rem; color:var(--text-sub); line-height:1.6;"></p>
                 </div>
+
+                <!-- PROS & CONS GRID -->
+                <div class="pros-cons-grid">
+                    <div class="pros-card">
+                        <div class="fund-title" style="color:var(--accent-emerald)">
                             ✅ Fundamental Strengths (Pros)
                         </div>
                         <ul class="bullet-list" id="fProsList"></ul>
@@ -973,7 +978,7 @@
             let uni = (sel && sel.value) ? sel.value : 'nifty200';
             btn.disabled = true;
             btn.innerHTML = '<span class="loader"></span> Scanning...';
-            document.getElementById('scanStatusText').innerText = `Scanning ${uni} universe...`;
+            document.getElementById('scanStatusText').innerText = `⏳ Scanning ${uni} universe... Auto-refreshing...`;
 
             try {
                 const res = await fetch('/api/scan', {
@@ -983,15 +988,20 @@
                 });
                 const data = await res.json();
                 if (data.success) {
-                    currentResults = data.results || [];
-                    populateSectors();
-                    renderResults();
-                    document.getElementById('scanStatusText').innerText = `Scan complete (${data.matches} stocks analyzed)`;
+                    let pollCount = 0;
+                    const poller = setInterval(async () => {
+                        pollCount++;
+                        await loadCached(true);
+                        if (currentResults.length > 0 || pollCount >= 10) {
+                            clearInterval(poller);
+                            btn.disabled = false;
+                            btn.innerHTML = '⚡ Run Scan';
+                        }
+                    }, 3000);
                 }
             } catch(e) {
-                alert("Scan failed. Check backend logs.");
+                console.error("runScan error:", e);
                 document.getElementById('scanStatusText').innerText = "Scan failed";
-            } finally {
                 btn.disabled = false;
                 btn.innerHTML = '⚡ Run Scan';
             }

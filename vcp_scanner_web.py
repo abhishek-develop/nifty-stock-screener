@@ -839,46 +839,25 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
 
 
 def calculate_vcp_score(df: pd.DataFrame) -> Optional[Dict]:
-    """Calculate normalized Minervini VCP score with strict institutional quality filters (0 to 100)."""
+    """Calculate normalized Minervini VCP score (0 to 100)."""
     if len(df) < 20:
         return None
 
     recent = df.tail(20)
     current_price = float(df['close'].iloc[-1])
     
-    # === INSTITUTIONAL QUALITY & LIQUIDITY FILTERS ===
-    # 1. Price Floor: Exclude penny stocks (< ₹25)
-    if current_price < 25.0:
-        return None
-
-    # 2. Liquidity & Turnover Floor: Exclude illiquid stocks (avg daily turnover < ₹30 Lakhs or volume < 15k)
+    # === INSTITUTIONAL QUALITY & LIQUIDITY METRICS ===
     avg_vol_20d = float(recent['volume'].mean())
     turnover_20d = current_price * avg_vol_20d
-    if avg_vol_20d < 15000 or turnover_20d < 3000000:
-        return None
 
-    # 3. Minervini Stage 2 Trend Hard Minimums:
-    # - Stock must be at least 25% above 52-week low
-    # - Stock must be within 25% of 52-week high (exclude deep downtrending fallen knives)
-    high_52w = float(df["high"].max())
-    low_52w = float(df["low"].min())
-    if low_52w > 0 and current_price < 1.25 * low_52w:
-        return None
-    if high_52w > 0 and current_price < 0.75 * high_52w:
-        return None
-
-    # 4. Volatility & Range Caps: Exclude hyper-volatile, loose or erratic stocks
+    # Volatility & Range Metrics
     atr = calculate_atr(df)
     atr_pct = float((atr / current_price) * 100) if current_price > 0 else 999.0
-    if atr_pct > 5.5:
-        return None  # Strict ATR% cap
 
     high_20d = float(recent['high'].max())
     low_20d = float(recent['low'].min())
     range_20d = high_20d - low_20d
     range_pct = float((range_20d / current_price) * 100) if current_price > 0 else 999.0
-    if range_pct > 18.0:
-        return None  # Strict 20D range cap (requires tight consolidation base)
 
     current_vol = float(df['volume'].iloc[-1])
     volume_ratio = float(current_vol / avg_vol_20d) if avg_vol_20d > 0 else 1.0
@@ -904,10 +883,6 @@ def calculate_vcp_score(df: pd.DataFrame) -> Optional[Dict]:
     risk_pct = round(float(((entry_price - stop_loss) / entry_price) * 100), 2) if entry_price > 0 else 0.0
     breakout_distance_pct = round(float(((prior_resistance - current_price) / current_price) * 100), 2) if current_price > 0 else 999.0
 
-    # 5. Pivot Gap Cap: Exclude stocks that are already heavily extended past pivot (> +8%)
-    if breakout_distance_pct > 8.0:
-        return None
-
     days_in_range = int(len(recent[
         (recent['close'] >= current_price * 0.95) & 
         (recent['close'] <= current_price * 1.05)
@@ -920,15 +895,10 @@ def calculate_vcp_score(df: pd.DataFrame) -> Optional[Dict]:
     ma150 = float(close_series.rolling(min(len(df), 150)).mean().iloc[-1])
     ma200 = float(close_series.rolling(min(len(df), 200)).mean().iloc[-1])
 
-    # 6. Moving Average Hard Criteria: Price must be above MA150 & MA200 for established stocks
-    if len(df) >= 150 and (current_price < ma150 or current_price < ma200):
-        return None
-
     high_52w = float(df["high"].max())
     low_52w = float(df["low"].min())
 
     trend_score = 0
-    # Penalize stocks with insufficient price history for reliable MA calculations
     has_full_history = len(df) >= 200
     if current_price > ma50: trend_score += 6
     if current_price > ma150: trend_score += 5
@@ -938,7 +908,12 @@ def calculate_vcp_score(df: pd.DataFrame) -> Optional[Dict]:
     if low_52w > 0 and (current_price >= 1.20 * low_52w): trend_score += 3
     if high_52w > 0 and (current_price >= 0.75 * high_52w): trend_score += 2
     if not has_full_history:
-        trend_score = max(0, trend_score - 5)  # Penalize unreliable MA template
+        trend_score = max(0, trend_score - 5)
+
+    if low_52w > 0 and current_price < 1.20 * low_52w:
+        trend_score = max(0, trend_score - 8)
+    if high_52w > 0 and current_price < 0.75 * high_52w:
+        trend_score = max(0, trend_score - 8)
 
     # === CONTRACTION WAVE PATTERN (25 POINTS MAX) ===
     n = len(df)
@@ -953,20 +928,22 @@ def calculate_vcp_score(df: pd.DataFrame) -> Optional[Dict]:
 
     contraction_score = 0
     if c1 > c2 > c3:
-        contraction_score += 15  # Progressive wave contraction (T1 > T2 > T3)
+        contraction_score += 25
     elif c2 > c3:
-        contraction_score += 10
+        contraction_score += 18
+    elif range_pct <= 15.0:
+        contraction_score += 12
+    elif range_pct <= 25.0:
+        contraction_score += 6
 
-    if c3 < 5.0: contraction_score += 10
-    elif c3 < 8.0: contraction_score += 7
-    elif c3 < 12.0: contraction_score += 4
-
-    # === VOLUME DRY-UP (20 POINTS MAX) ===
+    # === VOLUME DRY-UP PATTERN (20 POINTS MAX) ===
     volume_score = 0
-    if vol_decline > 0.30: volume_score += 10
-    elif vol_decline > 0.15: volume_score += 6
+    if vol_decline >= 0.35: volume_score += 10
+    elif vol_decline >= 0.15: volume_score += 6
+    elif vol_decline >= 0.05: volume_score += 3
 
-    if dry_up_ratio < 0.70: volume_score += 10
+    if dry_up_ratio < 0.65: volume_score += 10
+    elif dry_up_ratio < 0.80: volume_score += 8
     elif dry_up_ratio < 0.90: volume_score += 6
     elif dry_up_ratio < 1.05: volume_score += 3
 
@@ -974,14 +951,17 @@ def calculate_vcp_score(df: pd.DataFrame) -> Optional[Dict]:
     tightness_score = 0
     if price_tightness < 2.5: tightness_score += 8
     elif price_tightness < 4.0: tightness_score += 4
+    elif price_tightness < 6.0: tightness_score += 2
 
     if atr_pct < 2.5: tightness_score += 7
     elif atr_pct < 4.0: tightness_score += 4
+    elif atr_pct < 6.0: tightness_score += 2
 
     # === PIVOT PROXIMITY (10 POINTS MAX) ===
     pivot_score = 0
     if -1.0 <= breakout_distance_pct <= 4.0: pivot_score += 6
     elif 4.0 < breakout_distance_pct <= 8.0: pivot_score += 3
+    elif 8.0 < breakout_distance_pct <= 15.0: pivot_score += 1
 
     if days_in_range >= 12: pivot_score += 4
     elif days_in_range >= 8: pivot_score += 2
@@ -989,9 +969,6 @@ def calculate_vcp_score(df: pd.DataFrame) -> Optional[Dict]:
     raw_score = trend_score + contraction_score + volume_score + tightness_score + pivot_score
     vcp_score = int(round(min(100, max(0, raw_score))))
 
-    # 7. Minimum VCP Score Floor: Only stocks with a valid base setup (>= 45 pts) pass
-    if vcp_score < 45:
-        return None
 
     # Evidence Checklist
     evidence = []
@@ -1350,26 +1327,39 @@ def process_universe_fundamental_scores(result_dicts: List[Dict]) -> List[Dict]:
 
 def load_cache():
     """Load cached scan results for instant startup display."""
-    if not os.path.exists(CACHE_FILE):
-        return
-    try:
-        with open(CACHE_FILE, 'r') as f:
-            data = json.load(f)
-        scan_cache["last_scan"] = data.get("last_scan")
-        scan_cache["results"] = data.get("results", {})
-    except Exception as e:
-        print(f"Cache load error: {e}")
+    for filepath in [CACHE_FILE, f"{CACHE_FILE}.bak"]:
+        if os.path.exists(filepath) and os.path.getsize(filepath) > 10:
+            try:
+                with open(filepath, 'r') as f:
+                    data = json.load(f)
+                scan_cache["last_scan"] = data.get("last_scan")
+                res = data.get("results", {})
+                if res and any(len(v) > 0 for v in res.values()):
+                    scan_cache["results"] = res
+                    print(f"📁 Loaded cached results from {filepath}")
+                    return
+            except Exception as e:
+                print(f"Cache load error from {filepath}: {e}")
 
 
 def save_cache():
-    """Save scan results to cache file."""
+    """Save scan results atomically to prevent file corruption."""
     try:
         data = {
             "last_scan": scan_cache["last_scan"],
-            "results": {k: [serialize_result(r) for r in v] for k, v in scan_cache["results"].items()}
+            "results": {k: [serialize_result(r) for r in v] for k, v in scan_cache["results"].items() if v}
         }
-        with open(CACHE_FILE, 'w') as f:
+        tmp_file = f"{CACHE_FILE}.tmp"
+        bak_file = f"{CACHE_FILE}.bak"
+        with open(tmp_file, 'w') as f:
             json.dump(data, f, default=str)
+        
+        if os.path.exists(CACHE_FILE) and os.path.getsize(CACHE_FILE) > 10:
+            try:
+                os.replace(CACHE_FILE, bak_file)
+            except Exception:
+                pass
+        os.replace(tmp_file, CACHE_FILE)
     except Exception as e:
         print(f"Cache save error: {e}")
 
@@ -1482,45 +1472,18 @@ def index():
 
 @app.route('/api/scan', methods=['POST'])
 def api_scan():
-    """Manual scan endpoint."""
+    """Manual scan endpoint - launches background scan thread and returns immediately."""
     data = request.json or {}
     universe = data.get('universe', 'nifty200')
-    min_score = data.get('min_score', 0)
-    min_price = data.get('min_price', 0)
-    max_price = data.get('max_price', 999999)
-    custom_tickers = data.get('custom_tickers', [])
 
-    if universe == 'custom' and custom_tickers:
-        tickers = []
-        for raw_ticker in custom_tickers:
-            ticker = str(raw_ticker).strip().upper()
-            if not ticker:
-                continue
-            tickers.append(ticker if ticker.endswith('.NS') else f"{ticker}.NS")
-    else:
-        tickers = get_stock_universe(universe)
-
-    scan_cache["is_scanning"] = True
-    try:
-        results = scan_universe(tickers, min_score, min_price, max_price)
-    finally:
-        scan_cache["is_scanning"] = False
-
-    scan_cache["results"][universe] = results
-    scan_cache["last_scan"] = datetime.now().isoformat()
-    save_cache()
-
-    serialized = [serialize_result(r) for r in results]
-    evaluated = process_universe_fundamental_scores(serialized)
+    # Launch background scan thread so HTTP response returns instantly
+    threading.Thread(target=scan_single_universe_bg, args=(universe,), daemon=True).start()
 
     return jsonify({
         "success": True,
+        "message": f"Scan launched for {universe}. Auto-refreshing UI...",
         "universe": universe,
-        "scanned": len(tickers),
-        "matches": len(evaluated),
-        "last_scan": scan_cache["last_scan"],
-        "errors": scan_cache["errors"][-10:],
-        "results": evaluated
+        "is_scanning": True
     })
 
 
