@@ -19,6 +19,7 @@ from flask_cors import CORS
 import pandas as pd
 import numpy as np
 import json
+import math
 import os
 import sys
 import threading
@@ -1315,13 +1316,27 @@ def scan_universe(tickers: List[str], min_score: int = 0,
                 results.append(res)
 
     results.sort(key=lambda x: x.vcp_score, reverse=True)
-    return results
+    serialized = [serialize_result(r) for r in results]
+    evaluated = fundamental_engine.evaluate_universe(serialized)
+    return evaluated
+
+
+def clean_json_value(val):
+    if isinstance(val, float):
+        if math.isinf(val) or math.isnan(val):
+            return None
+        return val
+    elif isinstance(val, dict):
+        return {k: clean_json_value(v) for k, v in val.items()}
+    elif isinstance(val, list):
+        return [clean_json_value(x) for x in val]
+    return val
 
 
 def serialize_result(result):
-    """Convert scan rows into JSON-safe dictionaries."""
+    """Convert scan rows into JSON-safe dictionaries without NaN/Infinity."""
     d = asdict(result) if isinstance(result, VCPResult) else (dict(result) if isinstance(result, dict) else {})
-    return d
+    return clean_json_value(d)
 
 
 def process_universe_fundamental_scores(result_dicts: List[Dict]) -> List[Dict]:
@@ -1748,7 +1763,7 @@ def api_ipo_breakouts():
 
 @app.route('/api/results/<universe>')
 def get_results(universe):
-    """Get cached results. Auto-trigger background scan if empty for requested universe."""
+    """Get pre-scored cached results for requested universe with instant response time."""
     results = scan_cache["results"].get(universe, [])
     is_universe_scanning = scan_cache.get(f"scanning_{universe}", False)
 
@@ -1756,16 +1771,13 @@ def get_results(universe):
         threading.Thread(target=scan_single_universe_bg, args=(universe,), daemon=True).start()
         is_universe_scanning = True
 
-    serialized = [serialize_result(r) for r in results]
-    evaluated = process_universe_fundamental_scores(serialized)
-
     return jsonify({
         "success": True,
         "universe": universe,
-        "matches": len(evaluated),
+        "matches": len(results),
         "last_scan": scan_cache["last_scan"],
         "is_scanning": is_universe_scanning,
-        "results": evaluated
+        "results": results
     })
 
 

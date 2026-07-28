@@ -1154,6 +1154,7 @@
                     tabGrade = r.base_quality_grade || '⏳ Forming Base';
                 }
 
+                const scoreClass = tabScore >= 65 ? 'score-high' : tabScore >= 40 ? 'score-mid' : 'score-low';
                 const fScore = r.fundamental_score !== undefined && r.fundamental_score !== null ? r.fundamental_score : getFundamentalScore(r);
                 const fTier = r.fundamental_tier || (fScore >= 90 ? 'Excellent' : fScore >= 80 ? 'Very Strong' : fScore >= 70 ? 'Good' : fScore >= 60 ? 'Average' : fScore >= 50 ? 'Weak' : 'Poor');
                 const fColor = r.fundamental_color || (fScore >= 90 ? '#047857' : fScore >= 80 ? '#10b981' : fScore >= 70 ? '#34d399' : fScore >= 60 ? '#f59e0b' : fScore >= 50 ? '#f97316' : '#ef4444');
