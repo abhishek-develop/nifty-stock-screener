@@ -589,6 +589,18 @@
                 <label class="input-label">Search Ticker / Name</label>
                 <input type="text" id="searchInput" placeholder="Search RELIANCE, KAYNES..." oninput="renderResults()">
             </div>
+
+            <div class="input-group">
+                <label class="input-label">Sort Results By</label>
+                <select id="sortSelect" onchange="sortBy(this.value)" class="input-select">
+                    <option value="vcp_score">🌟 VCP Technical Rating</option>
+                    <option value="fundamental_score">💎 Fundamental Quality Score</option>
+                    <option value="roe_pct">📈 ROE % (Return on Equity)</option>
+                    <option value="breakout_distance_pct">🎯 Pivot Gap %</option>
+                    <option value="change_pct">📊 Daily Change %</option>
+                    <option value="price">💰 Stock Price</option>
+                </select>
+            </div>
         </div>
 
         <!-- METRIC STAT COUNTERS -->
@@ -598,8 +610,8 @@
                 <div class="stat-val" id="statTotal">0</div>
             </div>
             <div class="stat-card accent-ready">
-                <div class="input-label">Pivoting / Ready</div>
-                <div class="stat-val" style="color:var(--accent-blue)" id="statReady">0</div>
+                <div class="input-label">💎 Fundamental Leaders</div>
+                <div class="stat-val" style="color:var(--accent-emerald)" id="statFund">0</div>
             </div>
             <div class="stat-card accent-breakout">
                 <div class="input-label">Confirmed Breakouts</div>
@@ -616,7 +628,6 @@
             <button class="tab-btn tab-top-picks" onclick="switchTab('top_picks', this)">🔥 Top 10 Best Swing Trades</button>
             <button class="tab-btn tab-ipo-breakouts" onclick="switchTab('ipo_breakouts', this)">🐣 IPO Breakouts</button>
             <button class="tab-btn active" onclick="switchTab('ALL', this)">🌟 All Scanned Setups</button>
-            <button class="tab-btn" onclick="switchTab('ready', this)">🎯 Pivoting / Ready</button>
             <button class="tab-btn" onclick="switchTab('breakout', this)">🚀 Breakout Confirmed</button>
             <button class="tab-btn" onclick="switchTab('forming', this)">⏳ Forming Base</button>
             
@@ -634,6 +645,7 @@
                 <thead>
                     <tr>
                         <th id="thRatingHeader" onclick="sortBy('vcp_score')">VCP Rating ↕</th>
+                        <th onclick="sortBy('fundamental_score')">💎 Fundamentals ↕</th>
                         <th onclick="sortBy('ticker')">Stock Details ↕</th>
                         <th onclick="sortBy('sector')">Sector ↕</th>
                         <th onclick="sortBy('price')">Price ↕</th>
@@ -960,7 +972,6 @@
             const th = document.getElementById('thRatingHeader');
             if (th) {
                 if (tab === 'breakout') th.innerHTML = 'Breakout Rating ↕';
-                else if (tab === 'ready') th.innerHTML = 'Pivot Rating ↕';
                 else if (tab === 'forming') th.innerHTML = 'Base Quality Rating ↕';
                 else if (tab === 'top_picks') th.innerHTML = 'Conviction Rating ↕';
                 else if (tab === 'ipo_breakouts') th.innerHTML = 'IPO Rating ↕';
@@ -983,7 +994,31 @@
                 currentSort.col = col;
                 currentSort.dir = 'desc';
             }
+            const sel = document.getElementById('sortSelect');
+            if (sel && sel.value !== col) sel.value = col;
             renderResults();
+        }
+
+        function getFundamentalScore(r) {
+            if (r.fundamental_score !== undefined && r.fundamental_score !== null && r.fundamental_score > 0) {
+                return r.fundamental_score;
+            }
+            let score = 0;
+            if (r.roe_pct !== null && r.roe_pct !== undefined) {
+                if (r.roe_pct >= 25) score += 40;
+                else if (r.roe_pct >= 18) score += 32;
+                else if (r.roe_pct >= 12) score += 22;
+                else if (r.roe_pct >= 5) score += 12;
+                else if (r.roe_pct > 0) score += 5;
+            }
+            if (r.profit_margin_pct !== null && r.profit_margin_pct !== undefined) {
+                if (r.profit_margin_pct >= 20) score += 25;
+                else if (r.profit_margin_pct >= 12) score += 18;
+                else if (r.profit_margin_pct >= 5) score += 12;
+            }
+            if (r.is_fundamentally_sound) score += 20;
+            if (r.pe_ratio !== null && r.pe_ratio > 0 && r.pe_ratio <= 75) score += 15;
+            return score;
         }
 
         function renderResults() {
@@ -1009,7 +1044,7 @@
             });
 
             document.getElementById('statTotal').innerText = currentResults.length;
-            document.getElementById('statReady').innerText = currentResults.filter(r => r.status === 'ready').length;
+            document.getElementById('statFund').innerText = currentResults.filter(r => r.is_fundamentally_sound || getFundamentalScore(r) >= 50).length;
             document.getElementById('statBreakout').innerText = currentResults.filter(r => r.status === 'breakout').length;
             document.getElementById('statForming').innerText = currentResults.filter(r => r.status === 'forming').length;
 
@@ -1017,11 +1052,10 @@
                 let sortCol = currentSort.col;
                 if (sortCol === 'vcp_score') {
                     if (activeTab === 'breakout') sortCol = 'breakout_score';
-                    else if (activeTab === 'ready') sortCol = 'pivot_readiness_score';
                     else if (activeTab === 'forming') sortCol = 'base_quality_score';
                 }
-                let valA = a[sortCol] !== undefined ? a[sortCol] : a.vcp_score;
-                let valB = b[sortCol] !== undefined ? b[sortCol] : b.vcp_score;
+                let valA = sortCol === 'fundamental_score' ? getFundamentalScore(a) : (a[sortCol] !== undefined ? a[sortCol] : a.vcp_score);
+                let valB = sortCol === 'fundamental_score' ? getFundamentalScore(b) : (b[sortCol] !== undefined ? b[sortCol] : b.vcp_score);
                 if (typeof valA === 'string') return currentSort.dir === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
                 return currentSort.dir === 'asc' ? valA - valB : valB - valA;
             });
@@ -1029,27 +1063,26 @@
             const tbody = document.getElementById('resultsTableBody');
             if (filtered.length === 0) {
                 if (dataset.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">
+                    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:3rem; color:var(--text-muted);">
                         <div>No stocks available for this selection.</div>
                         <button class="btn-primary" style="margin:1rem auto 0 auto;" onclick="runScan()">⚡ Scan Universe Now</button>
                     </td></tr>`;
                 } else if (fundOnly && dataset.length > 0) {
-                    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">
+                    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:3rem; color:var(--text-muted);">
                         <div>💎 No stocks in this selection match the strict <strong>High Fundamental Quality</strong> filter.</div>
                         <div style="font-size:0.8rem; margin-top:0.4rem;">Uncheck <strong>'High Fundamentals Only'</strong> to view all technical setups.</div>
                     </td></tr>`;
                 } else if (activeTab === 'ipo_breakouts') {
-                    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">
+                    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:3rem; color:var(--text-muted);">
                         <div>🐣 No active IPO Breakout patterns detected right now.</div>
                         <div style="font-size:0.8rem; margin-top:0.4rem;">Select <strong>'Recent IPOs & Listings'</strong> from the Universe dropdown to view all recent IPO listings.</div>
                     </td></tr>`;
                 } else if (activeTab === 'breakout') {
-                    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">
+                    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:3rem; color:var(--text-muted);">
                         <div>🚀 No confirmed volume breakouts in this universe right now.</div>
-                        <div style="font-size:0.8rem; margin-top:0.4rem;">Check 'Pivoting / Ready' for stocks coiled tight near pivot resistance.</div>
                     </td></tr>`;
                 } else {
-                    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding:3rem; color:var(--text-muted);">No stocks match the selected search/sector filters.</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:3rem; color:var(--text-muted);">No stocks match the selected search/sector filters.</td></tr>`;
                 }
                 return;
             }
@@ -1061,15 +1094,14 @@
                 if (activeTab === 'breakout') {
                     tabScore = r.breakout_score !== undefined ? r.breakout_score : r.vcp_score;
                     tabGrade = r.breakout_grade || '🚀 Breakout Confirmed';
-                } else if (activeTab === 'ready') {
-                    tabScore = r.pivot_readiness_score !== undefined ? r.pivot_readiness_score : r.vcp_score;
-                    tabGrade = r.pivot_readiness_grade || '🎯 Coiled Pivot';
                 } else if (activeTab === 'forming') {
                     tabScore = r.base_quality_score !== undefined ? r.base_quality_score : r.vcp_score;
                     tabGrade = r.base_quality_grade || '⏳ Forming Base';
                 }
 
                 const scoreClass = tabScore >= 65 ? 'score-high' : tabScore >= 40 ? 'score-mid' : 'score-low';
+                const fScore = getFundamentalScore(r);
+                const fundScoreClass = fScore >= 60 ? 'score-high' : fScore >= 40 ? 'score-mid' : 'score-low';
                 const statusClass = `status-${r.status}`;
                 const chgColor = r.change_pct >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)';
                 const chgSign = r.change_pct >= 0 ? '+' : '';
@@ -1096,6 +1128,12 @@
                             <div style="display:flex; align-items:center; gap:0.6rem;">
                                 <div class="score-pill ${scoreClass}">${tabScore}</div>
                                 <span style="font-size:0.75rem; font-weight:700;">${tabGrade}</span>
+                            </div>
+                        </td>
+                        <td>
+                            <div style="display:flex; align-items:center; gap:0.35rem;">
+                                <span class="score-pill ${fundScoreClass}" style="font-weight:700;">💎 ${fScore}</span>
+                                ${r.roe_pct !== null && r.roe_pct !== undefined ? `<span style="font-size:0.72rem; color:var(--accent-emerald); font-weight:700;">(ROE ${r.roe_pct.toFixed(0)}%)</span>` : ''}
                             </div>
                         </td>
                         <td>

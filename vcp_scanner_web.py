@@ -530,6 +530,7 @@ class VCPResult:
     roe_pct: Optional[float]
     profit_margin_pct: Optional[float]
     is_fundamentally_sound: bool
+    fundamental_score: int
     about: str
     industry: str
     market_cap_cr: Optional[float]
@@ -747,6 +748,7 @@ def fetch_fundamental_metrics(ticker: str) -> Dict:
             is_sound = False  # Reject negative or hyper-inflated P/E (> 75)
 
         metrics["is_fundamentally_sound"] = is_sound
+        metrics["fundamental_score"] = calculate_fundamental_score(metrics)
 
     except Exception:
         pass
@@ -754,6 +756,53 @@ def fetch_fundamental_metrics(ticker: str) -> Dict:
     fundamental_cache[clean_sym] = metrics
     # NOTE: fundamental_cache is saved in batch after universe scan completes, not per-stock
     return metrics
+
+
+def calculate_fundamental_score(metrics: Dict) -> int:
+    """Calculate normalized Fundamental Quality Score (0 to 100)."""
+    if not metrics:
+        return 0
+        
+    eps = metrics.get("eps")
+    roe = metrics.get("roe")
+    margin = metrics.get("profit_margin")
+    de = metrics.get("debt_to_equity")
+    pe = metrics.get("pe")
+    
+    score = 0
+    
+    # 1. ROE % (Up to 40 pts)
+    if roe is not None:
+        if roe >= 25.0: score += 40
+        elif roe >= 18.0: score += 32
+        elif roe >= 12.0: score += 22
+        elif roe >= 5.0: score += 12
+        elif roe > 0: score += 5
+        
+    # 2. Net Profit Margin % (Up to 25 pts)
+    if margin is not None:
+        if margin >= 20.0: score += 25
+        elif margin >= 12.0: score += 18
+        elif margin >= 5.0: score += 12
+        elif margin > 0: score += 5
+
+    # 3. Debt to Equity % (Up to 20 pts)
+    if de is not None:
+        if de <= 30.0: score += 20
+        elif de <= 80.0: score += 15
+        elif de <= 120.0: score += 8
+    else:
+        score += 10  # Moderate score for missing debt data
+        
+    # 4. Earnings & Valuation (Up to 15 pts)
+    if eps is not None and eps > 0:
+        score += 5
+    if pe is not None and 8.0 <= pe <= 55.0:
+        score += 10
+    elif pe is not None and 0 < pe <= 75.0:
+        score += 5
+
+    return int(min(100, max(0, score)))
 
 
 # ============================================================
@@ -1228,6 +1277,7 @@ def scan_stock(ticker: str) -> Optional[VCPResult]:
         roe_pct=fund_metrics.get("roe"),
         profit_margin_pct=fund_metrics.get("profit_margin"),
         is_fundamentally_sound=fund_metrics.get("is_fundamentally_sound", True),
+        fundamental_score=fund_metrics.get("fundamental_score", 0),
         about=fund_metrics.get("about", ""),
         industry=fund_metrics.get("industry", info["sector"]),
         market_cap_cr=fund_metrics.get("market_cap_cr"),
@@ -1268,11 +1318,28 @@ def scan_universe(tickers: List[str], min_score: int = 0,
 
 def serialize_result(result):
     """Convert scan rows into JSON-safe dictionaries."""
-    if isinstance(result, VCPResult):
-        return asdict(result)
-    if isinstance(result, dict):
-        return result
-    return {}
+    d = asdict(result) if isinstance(result, VCPResult) else (dict(result) if isinstance(result, dict) else {})
+    if d and (d.get("fundamental_score") is None or d.get("fundamental_score") == 0):
+        roe = d.get("roe_pct")
+        margin = d.get("profit_margin_pct")
+        pe = d.get("pe_ratio")
+        is_sound = d.get("is_fundamentally_sound", False)
+        f_score = 0
+        if roe is not None:
+            if roe >= 25.0: f_score += 40
+            elif roe >= 18.0: f_score += 32
+            elif roe >= 12.0: f_score += 22
+            elif roe >= 5.0: f_score += 12
+            elif roe > 0: f_score += 5
+        if margin is not None:
+            if margin >= 20.0: f_score += 25
+            elif margin >= 12.0: f_score += 18
+            elif margin >= 5.0: f_score += 12
+            elif margin > 0: f_score += 5
+        if is_sound: f_score += 20
+        if pe is not None and 0 < pe <= 75.0: f_score += 15
+        d["fundamental_score"] = int(min(100, max(0, f_score)))
+    return d
 
 
 def load_cache():
