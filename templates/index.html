@@ -637,6 +637,7 @@
         <div class="tab-bar">
             <button class="tab-btn tab-top-picks" onclick="switchTab('top_picks', this)">🔥 Top 10 Best Swing Trades</button>
             <button class="tab-btn tab-ipo-breakouts" onclick="switchTab('ipo_breakouts', this)">🐣 IPO Breakouts</button>
+            <button class="tab-btn tab-watchlist" style="color:var(--accent-amber);" onclick="switchTab('watchlist', this)">⭐ My Watchlist</button>
             <button class="tab-btn active" onclick="switchTab('ALL', this)">🌟 All Scanned Setups</button>
             <button class="tab-btn" onclick="switchTab('breakout', this)">🚀 Breakout Confirmed</button>
             <button class="tab-btn" onclick="switchTab('forming', this)">⏳ Forming Base</button>
@@ -693,6 +694,7 @@
                     <button class="btn-secondary" id="btnPrevStock" onclick="navigateStock(-1)">◀ Prev</button>
                     <span id="mStockCounter" style="font-size:0.75rem; font-weight:700; color:var(--text-muted); min-width:46px; text-align:center;">--</span>
                     <button class="btn-secondary" id="btnNextStock" onclick="navigateStock(1)">Next ▶</button>
+                    <button id="btnWatchlistToggle" onclick="toggleWatchlistCurrentStock()" class="btn-secondary" style="color:var(--accent-amber); font-weight:700;">⭐ Add to Watchlist</button>
                     <a id="tvLink" target="_blank" href="#" class="btn-secondary">↗ TradingView</a>
                     <a id="chartinkLink" target="_blank" href="#" class="btn-secondary">📊 Chartink</a>
                     <button class="modal-close" onclick="closeModal()">&times;</button>
@@ -845,6 +847,8 @@
         let currentResults = [];
         let topPicksResults = [];
         let ipoBreakoutsResults = [];
+        let watchlistResults = [];
+        let watchlistTickers = new Set();
         let activeTab = 'ALL';
         let currentSort = { col: 'vcp_score', dir: 'desc' };
         let activeStock = null;
@@ -972,6 +976,72 @@
             }
         }
 
+        async function loadWatchlist() {
+            try {
+                const res = await fetch('/api/watchlist');
+                const data = await res.json();
+                if (data.success) {
+                    watchlistResults = data.results || [];
+                    watchlistTickers = new Set(data.tickers || []);
+                    populateSectors();
+                    renderResults();
+                    document.getElementById('scanStatusText').innerText = `Loaded ${watchlistResults.length} Watchlist stocks (${data.tickers.length} in list)`;
+                }
+            } catch(e) {
+                console.error("loadWatchlist error:", e);
+                document.getElementById('scanStatusText').innerText = "Failed to load Watchlist";
+            }
+        }
+
+        async function toggleWatchlist(ticker) {
+            if (!ticker) return;
+            const cleanT = ticker.replace(/[^a-zA-Z0-9_-]/g, '').toUpperCase();
+            const endpoint = watchlistTickers.has(cleanT) ? '/api/watchlist/remove' : '/api/watchlist/add';
+            try {
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticker: cleanT })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    watchlistTickers = new Set(data.watchlist || []);
+                    if (activeStock && activeStock.ticker.toUpperCase() === cleanT) {
+                        updateWatchlistButton(cleanT);
+                    }
+                    if (activeTab === 'watchlist') {
+                        await loadWatchlist();
+                    } else {
+                        renderResults();
+                    }
+                }
+            } catch(e) {
+                console.error("toggleWatchlist error:", e);
+            }
+        }
+
+        async function toggleWatchlistCurrentStock() {
+            if (!activeStock) return;
+            await toggleWatchlist(activeStock.ticker);
+        }
+
+        function updateWatchlistButton(ticker) {
+            const btn = document.getElementById('btnWatchlistToggle');
+            if (!btn) return;
+            const cleanT = ticker.replace(/[^a-zA-Z0-9_-]/g, '').toUpperCase();
+            if (watchlistTickers.has(cleanT)) {
+                btn.innerHTML = '★ In Watchlist';
+                btn.style.background = 'rgba(245, 158, 11, 0.15)';
+                btn.style.color = 'var(--accent-amber)';
+                btn.style.borderColor = 'rgba(245, 158, 11, 0.4)';
+            } else {
+                btn.innerHTML = '☆ Add to Watchlist';
+                btn.style.background = 'transparent';
+                btn.style.color = 'var(--text-sub)';
+                btn.style.borderColor = 'var(--border-color)';
+            }
+        }
+
         async function runScan() {
             const btn = document.getElementById('scanBtn');
             const sel = document.getElementById('universeSelect');
@@ -1008,7 +1078,7 @@
         }
 
         function populateSectors() {
-            const allItems = [...currentResults, ...topPicksResults, ...ipoBreakoutsResults];
+            const allItems = [...currentResults, ...topPicksResults, ...ipoBreakoutsResults, ...watchlistResults];
             const sectors = new Set(allItems.map(r => r.sector).filter(Boolean));
             const sel = document.getElementById('sectorSelect');
             const curr = sel.value;
@@ -1030,6 +1100,7 @@
                 else if (tab === 'forming') th.innerHTML = 'Base Quality Rating ↕';
                 else if (tab === 'top_picks') th.innerHTML = 'Conviction Rating ↕';
                 else if (tab === 'ipo_breakouts') th.innerHTML = 'IPO Rating ↕';
+                else if (tab === 'watchlist') th.innerHTML = 'Watchlist Rating ↕';
                 else th.innerHTML = 'VCP Rating ↕';
             }
 
@@ -1037,6 +1108,8 @@
                 await loadTopPicks();
             } else if (tab === 'ipo_breakouts') {
                 await loadIpoBreakouts();
+            } else if (tab === 'watchlist') {
+                await loadWatchlist();
             } else {
                 renderResults();
             }
@@ -1082,7 +1155,7 @@
             const minScore = parseInt(document.getElementById('minScoreInput').value) || 0;
             const fundOnly = document.getElementById('fundOnlyToggle') ? document.getElementById('fundOnlyToggle').checked : false;
 
-            const dataset = activeTab === 'top_picks' ? topPicksResults : (activeTab === 'ipo_breakouts' ? ipoBreakoutsResults : currentResults);
+            const dataset = activeTab === 'top_picks' ? topPicksResults : (activeTab === 'ipo_breakouts' ? ipoBreakoutsResults : (activeTab === 'watchlist' ? watchlistResults : currentResults));
 
             let filtered = dataset.filter(r => {
                 if (r.vcp_score < minScore) return false;
@@ -1092,7 +1165,7 @@
                     if (r.pe_ratio !== null && (r.pe_ratio <= 0 || r.pe_ratio > 75.0)) return false;
                     if (r.profit_margin_pct !== null && r.profit_margin_pct < 3.0) return false;
                 }
-                if (activeTab !== 'ALL' && activeTab !== 'top_picks' && activeTab !== 'ipo_breakouts' && r.status !== activeTab) return false;
+                if (activeTab !== 'ALL' && activeTab !== 'top_picks' && activeTab !== 'ipo_breakouts' && activeTab !== 'watchlist' && r.status !== activeTab) return false;
                 if (sector !== 'ALL' && r.sector !== sector) return false;
                 if (search && !r.ticker.toUpperCase().includes(search) && !r.name.toUpperCase().includes(search)) return false;
                 return true;
@@ -1118,10 +1191,17 @@
             const tbody = document.getElementById('resultsTableBody');
             if (filtered.length === 0) {
                 if (dataset.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:3rem; color:var(--text-muted);">
-                        <div>No stocks available for this selection.</div>
-                        <button class="btn-primary" style="margin:1rem auto 0 auto;" onclick="runScan()">⚡ Scan Universe Now</button>
-                    </td></tr>`;
+                    if (activeTab === 'watchlist') {
+                        tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:3rem; color:var(--text-muted);">
+                            <div>⭐ Your Watchlist is currently empty.</div>
+                            <div style="font-size:0.8rem; margin-top:0.4rem;">Click the <strong>'☆ Add to Watchlist'</strong> button on any stock or click the star icon in table rows to shortlist stocks.</div>
+                        </td></tr>`;
+                    } else {
+                        tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:3rem; color:var(--text-muted);">
+                            <div>No stocks available for this selection.</div>
+                            <button class="btn-primary" style="margin:1rem auto 0 auto;" onclick="runScan()">⚡ Scan Universe Now</button>
+                        </td></tr>`;
+                    }
                 } else if (fundOnly && dataset.length > 0) {
                     tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:3rem; color:var(--text-muted);">
                         <div>💎 No stocks in this selection match the strict <strong>High Fundamental Quality</strong> filter.</div>
@@ -1177,6 +1257,7 @@
                 const fundBadge = r.is_fundamentally_sound 
                     ? `<span title="Fundamentally Strong (Positive ROE & EPS)" style="font-size:0.75rem; margin-left:0.2rem; cursor:help;">💎</span>` 
                     : '';
+                const starIcon = `<span onclick="event.stopPropagation(); toggleWatchlist('${cleanTicker}');" style="cursor:pointer; font-size:0.95rem; margin-right:0.25rem; transition:transform 0.1s;" title="Toggle Watchlist">${watchlistTickers.has(cleanTicker) ? '⭐' : '☆'}</span>`;
 
                 return `
                     <tr class="stock-row" onclick="openStockChartByTicker('${cleanTicker}')">
@@ -1195,7 +1276,7 @@
                         </td>
                         <td>
                             <div style="display:flex; align-items:center; flex-wrap:wrap; gap:0.3rem;">
-                                <span style="font-weight:700; font-size:0.95rem; color:var(--accent-blue);">${r.ticker}</span>${fundBadge}
+                                ${starIcon}<span style="font-weight:700; font-size:0.95rem; color:var(--accent-blue);">${r.ticker}</span>${fundBadge}
                                 ${categoryBadge}
                             </div>
                             ${r.conviction_reason ? `<div style="font-size:0.72rem; color:var(--accent-emerald); font-weight:600; margin-top:0.1rem;">${r.conviction_reason}</div>` : `<div style="font-size:0.75rem; color:var(--text-muted);">${r.name}</div>`}
@@ -1241,6 +1322,7 @@
 
             document.getElementById('tvLink').href = `https://www.tradingview.com/chart/?symbol=NSE:${stock.ticker}`;
             document.getElementById('chartinkLink').href = `https://chartink.com/stocks/${stock.ticker.toLowerCase()}.html`;
+            updateWatchlistButton(stock.ticker);
 
             // Populate Fundamental View Fields
             document.getElementById('fCompTicker').innerText = stock.ticker;
@@ -1320,6 +1402,36 @@
                 penaltyUl.innerHTML = penaltyReasons.length > 0
                     ? penaltyReasons.map(p => `<li><span>⚠️</span> <span>${p}</span></li>`).join('')
                     : `<li><span>✅</span> <span>No governance or financial stress flags detected</span></li>`;
+            }
+
+            // Populate Pros List
+            const prosUl = document.getElementById('fProsList');
+            if (prosUl) {
+                const prosList = stock.pros || [];
+                prosUl.innerHTML = prosList.length > 0
+                    ? prosList.map(p => `<li><span>✅</span> <span>${p}</span></li>`).join('')
+                    : `<li><span>ℹ️</span> <span>No specific fundamental strengths identified yet</span></li>`;
+            }
+
+            // Populate Cons List
+            const consUl = document.getElementById('fConsList');
+            if (consUl) {
+                const consList = stock.cons || [];
+                consUl.innerHTML = consList.length > 0
+                    ? consList.map(c => `<li><span>⚠️</span> <span>${c}</span></li>`).join('')
+                    : `<li><span>ℹ️</span> <span>No specific risk factors identified yet</span></li>`;
+            }
+
+            // Populate Evidence Checklist
+            const evidenceUl = document.getElementById('fEvidenceList');
+            if (evidenceUl) {
+                const evidenceList = stock.evidence || [];
+                evidenceUl.innerHTML = evidenceList.length > 0
+                    ? evidenceList.map(e => {
+                        const isPositive = e.startsWith('✅') || e.startsWith('🎯') || e.startsWith('📈');
+                        return `<li><span>${isPositive ? '✅' : '📋'}</span> <span>${e}</span></li>`;
+                    }).join('')
+                    : `<li><span>📋</span> <span>No technical evidence data available</span></li>`;
             }
 
             document.getElementById('detailModal').style.display = 'flex';
@@ -1553,6 +1665,7 @@
         }
 
         async function initPage() {
+            await loadWatchlist();
             await loadCached();
             await loadUniverses();
         }

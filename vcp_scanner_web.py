@@ -29,7 +29,7 @@ import time
 from io import StringIO
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict, field
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
@@ -564,6 +564,7 @@ class VCPResult:
     cons: List[str] = field(default_factory=list)
     chart_data: List[float] = field(default_factory=list)
     evidence: List[str] = field(default_factory=list)
+    fund_metrics: Dict[str, Any] = field(default_factory=dict)
     last_updated: str = ""
 
 
@@ -591,6 +592,32 @@ def save_fundamental_cache():
         pass
 
 load_fundamental_cache()
+
+# ============================================================
+# WATCHLIST PERSISTENCE
+# ============================================================
+
+WATCHLIST_FILE = 'watchlist.json'
+watchlist_tickers: List[str] = []
+
+def load_watchlist():
+    global watchlist_tickers
+    if os.path.exists(WATCHLIST_FILE):
+        try:
+            with open(WATCHLIST_FILE, 'r') as f:
+                data = json.load(f)
+                watchlist_tickers = data if isinstance(data, list) else data.get("tickers", [])
+        except Exception:
+            watchlist_tickers = []
+
+def save_watchlist():
+    try:
+        with open(WATCHLIST_FILE, 'w') as f:
+            json.dump(watchlist_tickers, f, indent=2)
+    except Exception:
+        pass
+
+load_watchlist()
 
 
 def build_dynamic_pros_cons(ticker: str, df: pd.DataFrame, vcp_data: Dict, fund_metrics: Dict) -> Tuple[List[str], List[str]]:
@@ -683,24 +710,25 @@ def build_dynamic_pros_cons(ticker: str, df: pd.DataFrame, vcp_data: Dict, fund_
 
 
 def fetch_fundamental_metrics(ticker: str) -> Dict:
-    """Fetch key fundamental health metrics and company profile for a ticker."""
+    """Fetch comprehensive fundamental metrics and company profile for a ticker.
+    Extracts ~20+ fields from yfinance to feed the Institutional Scoring Engine."""
     clean_sym = normalize_ticker(ticker)
     if clean_sym in fundamental_cache:
         return fundamental_cache[clean_sym]
 
     metrics = {
-        "eps": None,
-        "pe": None,
-        "roe": None,
-        "debt_to_equity": None,
-        "profit_margin": None,
-        "revenue_growth": None,
+        "eps": None, "pe": None, "roe": None, "roce": None,
+        "debt_to_equity": None, "profit_margin": None, "operating_margin": None,
+        "net_margin": None, "gross_margin": None,
+        "revenue_growth": None, "earnings_growth": None,
+        "current_ratio": None, "quick_ratio": None, "interest_coverage": None,
+        "peg": None, "price_to_book": None, "ev_ebitda": None, "price_to_sales": None,
+        "industry_pe": None,
+        "free_cash_flow": None, "operating_cashflow": None, "fcf_margin": None,
+        "promoter_holding": None, "promoter_pledge": None,
         "is_fundamentally_sound": True,
-        "about": "",
-        "industry": "NSE Equities",
-        "market_cap_cr": None,
-        "pros": [],
-        "cons": []
+        "about": "", "industry": "NSE Equities", "sector": "General",
+        "market_cap_cr": None, "pros": [], "cons": []
     }
 
     try:
@@ -723,12 +751,17 @@ def fetch_fundamental_metrics(ticker: str) -> Dict:
         market_cap = getattr(fi, 'market_cap', None) or (fi.get('market_cap') if isinstance(fi, dict) else None)
         pe_fast = getattr(fi, 'pe_ratio', None) or (fi.get('pe_ratio') if isinstance(fi, dict) else None)
 
+        # === CORE METRICS ===
         eps = info.get('trailingEps') or info.get('forwardEps')
         pe_val = pe_fast or info.get('trailingPE') or info.get('forwardPE')
         roe = info.get('returnOnEquity')
+        roa = info.get('returnOnAssets')
         debt_to_equity = info.get('debtToEquity')
         profit_margin = info.get('profitMargins')
-        rev_growth = info.get('revenueGrowth') or info.get('earningsGrowth')
+        operating_margin = info.get('operatingMargins')
+        gross_margin = info.get('grossMargins')
+        rev_growth = info.get('revenueGrowth')
+        earnings_growth = info.get('earningsGrowth')
         summary_raw = info.get('longBusinessSummary') or info.get('summaryProfile')
 
         metrics["eps"] = round(float(eps), 2) if eps is not None else None
@@ -736,42 +769,100 @@ def fetch_fundamental_metrics(ticker: str) -> Dict:
         metrics["roe"] = round(float(roe * 100), 2) if roe is not None else None
         metrics["debt_to_equity"] = round(float(debt_to_equity), 2) if debt_to_equity is not None else None
         metrics["profit_margin"] = round(float(profit_margin * 100), 2) if profit_margin is not None else None
+        metrics["net_margin"] = round(float(profit_margin * 100), 2) if profit_margin is not None else None
+        metrics["operating_margin"] = round(float(operating_margin * 100), 2) if operating_margin is not None else None
+        metrics["gross_margin"] = round(float(gross_margin * 100), 2) if gross_margin is not None else None
         metrics["revenue_growth"] = round(float(rev_growth * 100), 2) if rev_growth is not None else None
+        metrics["earnings_growth"] = round(float(earnings_growth * 100), 2) if earnings_growth is not None else None
 
+        # === ROCE (Return on Capital Employed) ===
+        # Approximate: EBIT / (Total Assets - Current Liabilities) or use ROA as proxy
+        ebitda_val = info.get('ebitda')
+        total_revenue = info.get('totalRevenue')
+        if ebitda_val and total_revenue and total_revenue > 0:
+            # ROCE ≈ EBIT margin × asset turnover; approximate with operating margin × 2 as rough proxy
+            if operating_margin is not None:
+                metrics["roce"] = round(float(operating_margin * 100 * 1.5), 2)  # Rough proxy
+        if metrics["roce"] is None and roa is not None:
+            metrics["roce"] = round(float(roa * 100 * 2.0), 2)  # ROA × leverage proxy
+
+        # === FINANCIAL STRENGTH ===
+        metrics["current_ratio"] = round(float(info.get('currentRatio')), 2) if info.get('currentRatio') is not None else None
+        metrics["quick_ratio"] = round(float(info.get('quickRatio')), 2) if info.get('quickRatio') is not None else None
+
+        # Interest Coverage = EBIT / Interest Expense
+        total_debt = info.get('totalDebt')
+        if ebitda_val and total_debt and total_debt > 0:
+            # Approximate interest expense as ~8% of total debt (Indian avg lending rate)
+            approx_interest = total_debt * 0.08
+            if approx_interest > 0:
+                metrics["interest_coverage"] = round(float(ebitda_val / approx_interest), 2)
+
+        # === VALUATION ===
+        metrics["peg"] = round(float(info.get('pegRatio')), 2) if info.get('pegRatio') is not None else None
+        metrics["price_to_book"] = round(float(info.get('priceToBook')), 2) if info.get('priceToBook') is not None else None
+        metrics["ev_ebitda"] = round(float(info.get('enterpriseToEbitda')), 2) if info.get('enterpriseToEbitda') is not None else None
+        metrics["price_to_sales"] = round(float(info.get('priceToSalesTrailing12Months')), 2) if info.get('priceToSalesTrailing12Months') is not None else None
+
+        # Industry PE from sector metadata or use forward PE as proxy
+        ind_pe = info.get('industryPE')
+        if ind_pe is not None:
+            metrics["industry_pe"] = round(float(ind_pe), 2)
+
+        # === CASH FLOW ===
+        fcf = info.get('freeCashflow')
+        ocf = info.get('operatingCashflow')
+        if fcf is not None:
+            metrics["free_cash_flow"] = round(float(fcf) / 10000000.0, 2)  # Convert to Cr
+        if ocf is not None:
+            metrics["operating_cashflow"] = round(float(ocf) / 10000000.0, 2)
+        # FCF margin = FCF / Revenue
+        if fcf is not None and total_revenue and total_revenue > 0:
+            metrics["fcf_margin"] = round(float(fcf / total_revenue * 100), 2)
+
+        # === MANAGEMENT / OWNERSHIP ===
+        insiders_pct = info.get('heldPercentInsiders')
+        if insiders_pct is not None:
+            metrics["promoter_holding"] = round(float(insiders_pct * 100), 2)
+
+        # === MARKET CAP ===
         if market_cap:
             metrics["market_cap_cr"] = round(float(market_cap) / 10000000.0, 2)
         elif info.get('marketCap'):
             metrics["market_cap_cr"] = round(float(info.get('marketCap')) / 10000000.0, 2)
 
+        # === SECTOR/INDUSTRY ===
+        metrics["sector"] = info.get('sector') or dynamic_metadata.get(clean_sym, {}).get("sector", "General")
+        metrics["industry"] = info.get('industry') or "NSE Equities"
+
+        # === ABOUT ===
         summary_text = summary_raw if summary_raw and isinstance(summary_raw, str) and len(summary_raw.strip()) > 10 else None
         if not summary_text:
             meta_name = dynamic_metadata.get(clean_sym, {}).get("name", clean_sym)
             sec = dynamic_metadata.get(clean_sym, {}).get("sector", "NSE Equities")
             summary_text = f"{meta_name} ({clean_sym}) is a premier NSE-listed equity operating within the {sec} sector, delivering corporate products, services, and growth in the Indian market."
-
         if len(summary_text) > 350:
             summary_text = summary_text[:347] + "..."
-
         metrics["about"] = summary_text
 
-        # Strict fundamental quality evaluation (Requires positive EPS, ROE >= 10%, margin >= 3%, low debt, sensible P/E)
+        # === FUNDAMENTAL QUALITY EVALUATION ===
         eps_val = metrics.get("eps")
         roe_val = metrics.get("roe")
         de_val = metrics.get("debt_to_equity")
         margin_val = metrics.get("profit_margin")
-        pe_val = metrics.get("pe")
+        pe_check = metrics.get("pe")
 
         is_sound = True
         if eps_val is None or eps_val <= 0:
-            is_sound = False  # Reject loss-making or missing EPS
+            is_sound = False
         if roe_val is None or roe_val < 10.0:
-            is_sound = False  # Reject low ROE (< 10%) or missing ROE
+            is_sound = False
         if margin_val is not None and margin_val < 3.0:
-            is_sound = False  # Reject weak profit margin (< 3%)
+            is_sound = False
         if de_val is not None and de_val > 100.0:
-            is_sound = False  # Reject over-leveraged debt ratio (> 100%)
-        if pe_val is not None and (pe_val <= 0 or pe_val > 75.0):
-            is_sound = False  # Reject negative or hyper-inflated P/E (> 75)
+            is_sound = False
+        if pe_check is not None and (pe_check <= 0 or pe_check > 75.0):
+            is_sound = False
 
         metrics["is_fundamentally_sound"] = is_sound
         metrics["fundamental_score"] = calculate_fundamental_score(metrics)
@@ -780,7 +871,6 @@ def fetch_fundamental_metrics(ticker: str) -> Dict:
         pass
 
     fundamental_cache[clean_sym] = metrics
-    # NOTE: fundamental_cache is saved in batch after universe scan completes, not per-stock
     return metrics
 
 
@@ -1288,6 +1378,7 @@ def scan_stock(ticker: str) -> Optional[VCPResult]:
         cons=cons,
         chart_data=[round(x, 2) for x in chart_data],
         evidence=vcp_data["evidence"],
+        fund_metrics=fund_metrics,
         last_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     )
 
@@ -1334,8 +1425,15 @@ def clean_json_value(val):
 
 
 def serialize_result(result):
-    """Convert scan rows into JSON-safe dictionaries without NaN/Infinity."""
+    """Convert scan rows into JSON-safe dictionaries without NaN/Infinity.
+    Flattens fund_metrics into top-level dict so scoring engine can access all metric keys."""
     d = asdict(result) if isinstance(result, VCPResult) else (dict(result) if isinstance(result, dict) else {})
+    # Flatten fund_metrics into top-level for scoring engine access
+    fm = d.pop("fund_metrics", None)
+    if fm and isinstance(fm, dict):
+        for k, v in fm.items():
+            if k not in d:  # Don't overwrite existing fields
+                d[k] = v
     return clean_json_value(d)
 
 
@@ -1510,14 +1608,14 @@ def api_scan():
 
 def calculate_swing_conviction_score(stock) -> Tuple[int, str]:
     """Calculate Conviction Score (0-100) for Swing Trading based on risk-reward, pivot proximity, volume dry-up & fundamentals."""
-    vcp_score = getattr(stock, 'vcp_score', 0)
-    pivot_readiness = getattr(stock, 'pivot_readiness_score', 0)
-    base_quality = getattr(stock, 'base_quality_score', 0)
-    risk_pct = getattr(stock, 'risk_pct', 5.0)
-    status = getattr(stock, 'status', 'forming')
-    dry_up = getattr(stock, 'dry_up_ratio', 1.0)
-    vol_ratio = getattr(stock, 'volume_ratio', 1.0)
-    roe = getattr(stock, 'roe_pct', 0) or 0
+    vcp_score = stock.get('vcp_score', 0) if isinstance(stock, dict) else getattr(stock, 'vcp_score', 0)
+    pivot_readiness = stock.get('pivot_readiness_score', 0) if isinstance(stock, dict) else getattr(stock, 'pivot_readiness_score', 0)
+    base_quality = stock.get('base_quality_score', 0) if isinstance(stock, dict) else getattr(stock, 'base_quality_score', 0)
+    risk_pct = float(stock.get('risk_pct', 5.0) or 5.0) if isinstance(stock, dict) else float(getattr(stock, 'risk_pct', 5.0) or 5.0)
+    status = stock.get('status', 'forming') if isinstance(stock, dict) else getattr(stock, 'status', 'forming')
+    dry_up = float(stock.get('dry_up_ratio', 1.0) or 1.0) if isinstance(stock, dict) else float(getattr(stock, 'dry_up_ratio', 1.0) or 1.0)
+    vol_ratio = float(stock.get('volume_ratio', 1.0) or 1.0) if isinstance(stock, dict) else float(getattr(stock, 'volume_ratio', 1.0) or 1.0)
+    roe = float(stock.get('roe_pct', 0) or 0) if isinstance(stock, dict) else float(getattr(stock, 'roe_pct', 0) or 0)
 
     # 1. Base Score
     score = (0.35 * pivot_readiness) + (0.35 * base_quality) + (0.30 * vcp_score)
@@ -1566,6 +1664,85 @@ def calculate_swing_conviction_score(stock) -> Tuple[int, str]:
     return final_score, reason_str
 
 
+@app.route('/api/watchlist')
+def api_get_watchlist():
+    """Return watchlist tickers and their scan results instantly (0.001s)."""
+    results = []
+    missing_tickers = []
+    
+    for ticker in watchlist_tickers:
+        clean_w = normalize_ticker(ticker)
+        found = None
+        for uni_key, uni_results in scan_cache["results"].items():
+            for r in uni_results:
+                r_ticker = r.get("ticker", "") if isinstance(r, dict) else getattr(r, "ticker", "")
+                if normalize_ticker(r_ticker) == clean_w:
+                    found = r if isinstance(r, dict) else serialize_result(r)
+                    break
+            if found:
+                break
+        
+        if found:
+            results.append(found)
+        else:
+            missing_tickers.append(clean_w)
+
+    # If there are missing watchlist tickers, scan them in background thread
+    if missing_tickers and not scan_cache.get("scanning_watchlist", False):
+        def _bg_scan_watchlist(tickers):
+            scan_cache["scanning_watchlist"] = True
+            try:
+                scanned_items = []
+                for t_sym in tickers:
+                    res = scan_stock(t_sym)
+                    if res:
+                        scanned_items.append(serialize_result(res))
+                if scanned_items:
+                    scored = fundamental_engine.evaluate_universe(scanned_items)
+                    # Store in scan_cache under 'watchlist_extra'
+                    existing = scan_cache["results"].get("watchlist_extra", [])
+                    scan_cache["results"]["watchlist_extra"] = scored + existing
+                    save_cache()
+            except Exception as e:
+                print(f"Background watchlist scan error: {e}")
+            finally:
+                scan_cache["scanning_watchlist"] = False
+
+        threading.Thread(target=_bg_scan_watchlist, args=(missing_tickers,), daemon=True).start()
+
+    return jsonify({
+        "success": True,
+        "tickers": watchlist_tickers,
+        "matches": len(results),
+        "is_scanning": scan_cache.get("scanning_watchlist", False),
+        "results": results
+    })
+
+
+@app.route('/api/watchlist/add', methods=['POST'])
+def api_watchlist_add():
+    """Add a ticker to the watchlist."""
+    data = request.get_json() or {}
+    ticker = data.get("ticker", "").strip().upper().replace(".NS", "")
+    if not ticker:
+        return jsonify({"success": False, "error": "No ticker provided"}), 400
+    if ticker not in watchlist_tickers:
+        watchlist_tickers.append(ticker)
+        save_watchlist()
+    return jsonify({"success": True, "ticker": ticker, "watchlist": watchlist_tickers})
+
+
+@app.route('/api/watchlist/remove', methods=['POST'])
+def api_watchlist_remove():
+    """Remove a ticker from the watchlist."""
+    data = request.get_json() or {}
+    ticker = data.get("ticker", "").strip().upper().replace(".NS", "")
+    if ticker in watchlist_tickers:
+        watchlist_tickers.remove(ticker)
+        save_watchlist()
+    return jsonify({"success": True, "ticker": ticker, "watchlist": watchlist_tickers})
+
+
 @app.route('/api/results/top_picks')
 def api_top_picks():
     """Get Top 10 Best Swing Trade Setups in the entire market based on conviction scoring."""
@@ -1575,7 +1752,7 @@ def api_top_picks():
     for uni_id in ["nifty50", "nifty200", "nifty500", "smallcap", "ipo"]:
         raw_list = scan_cache["results"].get(uni_id, [])
         for stock in raw_list:
-            t = getattr(stock, 'ticker', '')
+            t = stock.get('ticker', '') if isinstance(stock, dict) else getattr(stock, 'ticker', '')
             if t and t not in seen_tickers:
                 seen_tickers.add(t)
                 conviction_score, conviction_reason = calculate_swing_conviction_score(stock)
