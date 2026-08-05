@@ -1299,6 +1299,7 @@
             let stock = currentResults.find(r => r.ticker === ticker);
             if (!stock) stock = topPicksResults.find(r => r.ticker === ticker);
             if (!stock) stock = ipoBreakoutsResults.find(r => r.ticker === ticker);
+            if (!stock) stock = watchlistResults.find(r => r.ticker === ticker);
             if (!stock) return;
             openStockChart(stock);
         }
@@ -1306,17 +1307,17 @@
         async function openStockChart(stock) {
             activeStock = stock;
             document.getElementById('mTicker').innerText = stock.ticker;
-            document.getElementById('mName').innerText = stock.name;
-            document.getElementById('mEntry').innerText = `₹${stock.entry_price.toFixed(2)}`;
-            document.getElementById('mStop').innerText = `₹${stock.stop_loss.toFixed(2)}`;
-            document.getElementById('mRisk').innerText = `${stock.risk_pct.toFixed(2)}%`;
-            document.getElementById('mAtr').innerText = `${stock.atr.toFixed(2)} (${stock.atr_pct.toFixed(1)}%)`;
+            document.getElementById('mName').innerText = stock.name || stock.ticker;
+            document.getElementById('mEntry').innerText = (stock.entry_price !== undefined && stock.entry_price !== null) ? `₹${stock.entry_price.toFixed(2)}` : 'N/A';
+            document.getElementById('mStop').innerText = (stock.stop_loss !== undefined && stock.stop_loss !== null) ? `₹${stock.stop_loss.toFixed(2)}` : 'N/A';
+            document.getElementById('mRisk').innerText = (stock.risk_pct !== undefined && stock.risk_pct !== null) ? `${stock.risk_pct.toFixed(2)}%` : 'N/A';
+            document.getElementById('mAtr').innerText = (stock.atr !== undefined && stock.atr !== null) ? `${stock.atr.toFixed(2)} (${(stock.atr_pct || 0).toFixed(1)}%)` : 'N/A';
             document.getElementById('mPe').innerText = (stock.pe_ratio !== null && stock.pe_ratio !== undefined) ? stock.pe_ratio.toFixed(1) : 'N/A';
             document.getElementById('mRoe').innerText = (stock.roe_pct !== null && stock.roe_pct !== undefined) ? `${stock.roe_pct.toFixed(1)}%` : 'N/A';
             
             const badge = document.getElementById('mStatusBadge');
-            badge.innerText = stock.status.toUpperCase();
-            badge.className = `status-pill status-${stock.status}`;
+            badge.innerText = (stock.status || 'READY').toUpperCase();
+            badge.className = `status-pill status-${stock.status || 'ready'}`;
 
             document.getElementById('mGrade').innerText = stock.vcp_grade || '';
 
