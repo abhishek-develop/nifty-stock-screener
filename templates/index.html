@@ -169,6 +169,39 @@
             box-shadow: var(--shadow-card);
         }
 
+        .market-banner {
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+            align-items: center;
+            padding: 1rem 1.2rem;
+            border: 1px solid rgba(37, 99, 235, 0.22);
+            border-radius: 0.9rem;
+            background: linear-gradient(120deg, rgba(37, 99, 235, 0.08), rgba(5, 150, 105, 0.06));
+            box-shadow: var(--shadow-card);
+        }
+        .market-mode {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.3rem 0.65rem;
+            border-radius: 999px;
+            font-size: 0.72rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            background: rgba(37, 99, 235, 0.1);
+            color: var(--accent-blue);
+        }
+        .decision-trade { background: rgba(5,150,105,.1); color:#047857; border:1px solid rgba(5,150,105,.3); }
+        .decision-watch { background: rgba(217,119,6,.1); color:#b45309; border:1px solid rgba(217,119,6,.3); }
+        .research-filters summary {
+            cursor: pointer;
+            color: var(--text-sub);
+            font-size: 0.82rem;
+            font-weight: 700;
+            margin-bottom: 0.7rem;
+        }
+
         .input-group { display: flex; flex-direction: column; gap: 0.35rem; }
         .input-label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.05em; }
 
@@ -296,6 +329,8 @@
             box-shadow: var(--shadow-card);
         }
 
+        .table-card thead { position: sticky; top: 0; z-index: 2; }
+
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem; }
         th {
             background: #f8fafc;
@@ -314,7 +349,8 @@
         
         td { padding: 0.9rem 1.1rem; border-bottom: 1px solid var(--border); vertical-align: middle; color: var(--text-main); }
         tr.stock-row { cursor: pointer; transition: background 0.15s ease; }
-        tr.stock-row:hover { background: #f1f5f9; }
+        tr.stock-row:nth-child(even) { background: rgba(248, 250, 252, 0.55); }
+        tr.stock-row:hover { background: #eef4ff; }
         
         /* SCORE PILLS & STATUS BADGES */
         .score-pill {
@@ -391,16 +427,9 @@
             background: #f8fafc; padding: 0.45rem 0.75rem;
             border-radius: 0.5rem; border: 1px solid var(--border);
         }
-        .tf-btn {
-            padding: 0.35rem 0.65rem; font-size: 0.75rem; font-weight: 700;
-            border-radius: 0.35rem; border: 1px solid var(--border);
-            background: #ffffff; color: var(--text-sub); cursor: pointer;
-        }
-        .tf-btn.active { background: var(--accent-blue); color: white; border-color: var(--accent-blue); }
-
         .chart-box {
             background: #ffffff; border: 1px solid var(--border);
-            border-radius: 0.75rem; flex: 1; width: 100%; min-height: 380px;
+            border-radius: 0.75rem; flex: 1; width: 100%; min-height: 440px;
             position: relative; overflow: hidden; cursor: grab;
         }
         .chart-box:active { cursor: grabbing; }
@@ -446,6 +475,8 @@
                 padding: 0.85rem;
                 gap: 0.75rem;
             }
+
+            .market-banner { align-items: flex-start; flex-direction: column; }
 
             .stats-grid {
                 grid-template-columns: 1fr 1fr;
@@ -503,6 +534,8 @@
                 gap: 0.5rem;
             }
 
+            .chart-box { min-height: 340px; }
+
             .info-grid {
                 grid-template-columns: 1fr 1fr;
                 gap: 0.5rem;
@@ -538,7 +571,7 @@
         <a href="#" class="brand">
             <div class="brand-logo">📈</div>
             <div>
-                <div class="brand-title">VCP TERMINAL PRO</div>
+                <div class="brand-title">SWING FOCUS INDIA</div>
                 <div style="font-size:0.68rem; color:var(--text-muted); font-weight:600; display:flex; align-items:center; gap:0.4rem; margin-top:-2px;">
                     <span class="status-dot"></span> LIVE SCANNER ENGINE
                 </div>
@@ -559,17 +592,34 @@
     <!-- MAIN TERMINAL CONTENT -->
     <main class="main-container">
         
-        <!-- FILTER TOOLBAR -->
+        <div class="market-banner" id="marketBanner">
+            <div>
+                <div style="display:flex; gap:.6rem; align-items:center; margin-bottom:.25rem;">
+                    <span class="market-mode" id="marketMode">Loading market gate…</span>
+                    <strong id="dailyFocusTitle">Today’s decision list</strong>
+                </div>
+                <div id="marketMessage" style="font-size:.8rem; color:var(--text-sub); line-height:1.45;">
+                    Ranking liquid leaders and checking whether current market conditions permit new risk.
+                </div>
+            </div>
+            <div style="font-size:.76rem; color:var(--text-muted); max-width:440px; line-height:1.45;">
+                A quality score ranks evidence; it is not a win probability. Buy only after the displayed trigger and never above the chase limit.
+            </div>
+        </div>
+
+        <!-- RESEARCH FILTERS: SECONDARY TO THE DAILY DECISION LIST -->
+        <details class="research-filters">
+            <summary>Research filters and universe explorer</summary>
         <div class="filter-card">
             <div class="input-group">
-                <label class="input-label">Stock Universe</label>
-                <select id="universeSelect" onchange="loadCached()">
-                    <option value="nifty200" selected>Nifty 200 Equities</option>
+                <label class="input-label">Explorer Universe</label>
+                <select id="universeSelect" onchange="if (activeTab === 'explore') loadCached()">
+                    <option value="nifty500" selected>Nifty 500 Equities</option>
                     <option value="nifty50">Nifty 50 Bluechips</option>
-                    <option value="nifty500">Nifty 500 Equities</option>
+                    <option value="nifty200">Nifty 200 Equities</option>
                     <option value="smallcap">Smallcap Momentum</option>
                     <option value="ipo">Recent IPOs & Listings</option>
-                    <option value="nse_all">All NSE Equities (~1,000)</option>
+                    <option value="nse_all">Recent NSE 1000 (On Demand)</option>
                 </select>
             </div>
             
@@ -581,7 +631,7 @@
             </div>
             
             <div class="input-group">
-                <label class="input-label">Min Score Floor</label>
+                <label class="input-label">Minimum Quality</label>
                 <input type="number" id="minScoreInput" value="0" min="0" max="100" oninput="renderResults()">
             </div>
             
@@ -591,7 +641,7 @@
             </div>
             
             <div class="input-group">
-                <label class="input-label">Sort Results By</label>
+                <label class="input-label">Sort Explorer By</label>
                 <select id="sortSelect" onchange="sortBy(this.value)" class="input-select">
                     <option value="swing_score">🎯 Swing Setup Score</option>
                     <option value="vcp_score">🌟 VCP Technical Rating</option>
@@ -613,36 +663,34 @@
                 </select>
             </div>
         </div>
+        </details>
 
         <!-- METRIC STAT COUNTERS -->
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="input-label">Total Analyzed</div>
-                <div class="stat-val" id="statTotal">0</div>
+                <div class="input-label">Market Mode</div>
+                <div class="stat-val" id="statMarket" style="font-size:1.25rem;">—</div>
             </div>
             <div class="stat-card accent-ready">
-                <div class="input-label">💎 Fundamental Leaders</div>
-                <div class="stat-val" style="color:var(--accent-emerald)" id="statFund">0</div>
+                <div class="input-label">Trade Now</div>
+                <div class="stat-val" style="color:var(--accent-emerald)" id="statTrade">0</div>
             </div>
             <div class="stat-card accent-breakout">
-                <div class="input-label">Confirmed Breakouts</div>
-                <div class="stat-val" style="color:var(--accent-emerald)" id="statBreakout">0</div>
+                <div class="input-label">Watch For Trigger</div>
+                <div class="stat-val" style="color:var(--accent-amber)" id="statWatch">0</div>
             </div>
             <div class="stat-card accent-forming">
-                <div class="input-label">Forming Bases</div>
-                <div class="stat-val" style="color:var(--accent-amber)" id="statForming">0</div>
+                <div class="input-label">Leadership Breadth</div>
+                <div class="stat-val" id="statBreadth">—</div>
             </div>
         </div>
 
         <!-- FILTER TABS NAV -->
         <div class="tab-bar">
-            <button class="tab-btn tab-top-picks" onclick="switchTab('top_picks', this)">🎯 Breakout Radar</button>
-            <button class="tab-btn tab-ipo-breakouts" onclick="switchTab('ipo_breakouts', this)">🐣 IPO Breakouts</button>
+            <button class="tab-btn tab-top-picks active" onclick="switchTab('daily_focus', this)">Today · Trade Now</button>
+            <button class="tab-btn" onclick="switchTab('watch_trigger', this)">Watch For Trigger</button>
             <button class="tab-btn tab-watchlist" style="color:var(--accent-amber);" onclick="switchTab('watchlist', this)">⭐ My Watchlist</button>
-            <button class="tab-btn active" onclick="switchTab('ALL', this)">🌟 All Scanned Setups</button>
-            <button class="tab-btn" onclick="switchTab('breakout', this)">🚀 Breakout Confirmed</button>
-            <button class="tab-btn" onclick="switchTab('ready', this)">🎯 Near Pivot</button>
-            <button class="tab-btn" onclick="switchTab('forming', this)">⏳ Forming Base</button>
+            <button class="tab-btn" onclick="switchTab('explore', this)">Explore All</button>
             
             <label class="filter-toggle" style="background: rgba(5, 150, 105, 0.08); border-color: rgba(5, 150, 105, 0.3); color: var(--accent-emerald);">
                 <input type="checkbox" id="fundOnlyToggle" onchange="renderResults()" style="width:auto; cursor:pointer;">
@@ -653,7 +701,7 @@
         </div>
 
         <div style="font-size:0.78rem; color:var(--text-sub); background:rgba(217,119,6,0.07); border:1px solid rgba(217,119,6,0.25); border-radius:0.65rem; padding:0.7rem 0.9rem; line-height:1.45;">
-            Breakout Radar is a rules-based research shortlist, not a prediction or personalized recommendation. “Confirmed” requires a close above the pivot with volume; always verify the data date, liquidity, entry and stop before acting.
+            “Trade Now” means the completed daily candle confirmed price and volume conditions; it does not mean buy at any price. “Watch” means no trade until the exact trigger confirms. The system may correctly return zero trades.
         </div>
 
         <!-- MAIN TABLE VIEW -->
@@ -661,17 +709,17 @@
             <table>
                 <thead>
                     <tr>
-                        <th id="thRatingHeader" onclick="sortBy('swing_score')">Swing Score ↕</th>
-                        <th onclick="sortBy('fundamental_score')">💎 Institutional Fundamentals ↕</th>
-                        <th onclick="sortBy('ticker')">Stock Details ↕</th>
+                        <th id="thRatingHeader" onclick="sortBy('focus_score')">Quality ↕</th>
+                        <th onclick="sortBy('ticker')">Stock & Setup ↕</th>
+                        <th>Why It Qualified</th>
                         <th onclick="sortBy('sector')">Sector ↕</th>
                         <th onclick="sortBy('price')">Price ↕</th>
-                        <th onclick="sortBy('change_pct')">Change% ↕</th>
-                        <th onclick="sortBy('status')">Status ↕</th>
-                        <th onclick="sortBy('contraction')">Contraction ↕</th>
-                        <th onclick="sortBy('dry_up_ratio')">Vol Dry Up ↕</th>
+                        <th onclick="sortBy('volume_ratio')">Volume ↕</th>
+                        <th onclick="sortBy('trade_state')">Decision ↕</th>
+                        <th onclick="sortBy('risk_pct')">Entry / Stop ↕</th>
+                        <th onclick="sortBy('rs_3m_pct')">RS vs Nifty ↕</th>
                         <th onclick="sortBy('breakout_distance_pct')">Pivot Gap ↕</th>
-                        <th>Sparkline (20D)</th>
+                        <th>20D Trend</th>
                         <th>Action</th>
                     </tr>
                 </thead>
@@ -715,17 +763,11 @@
 
             <!-- TECHNICAL CHART VIEW CONTAINER -->
             <div id="chartViewContainer" style="display:flex; flex-direction:column; flex:1; overflow:hidden;">
-                <!-- CHART TOOLBAR & TIMEFRAME CONTROLS -->
+                <!-- DAILY CHART CONTEXT -->
                 <div class="chart-controls">
-                    <div id="timeframeBar" style="display:flex; align-items:center; gap:0.3rem;">
-                        <span style="font-size:0.7rem; font-weight:700; color:var(--text-muted); margin-right:0.4rem;">TIMEFRAME:</span>
-                        <button class="tf-btn" data-tf="1" onclick="changeTimeframe('1')">1m</button>
-                        <button class="tf-btn" data-tf="5" onclick="changeTimeframe('5')">5m</button>
-                        <button class="tf-btn" data-tf="15" onclick="changeTimeframe('15')">15m</button>
-                        <button class="tf-btn" data-tf="60" onclick="changeTimeframe('60')">1H</button>
-                        <button class="tf-btn active" data-tf="D" id="tfDefaultD" onclick="changeTimeframe('D')">1D (2Y History)</button>
-                        <button class="tf-btn" data-tf="W" onclick="changeTimeframe('W')">1W (5Y History)</button>
-                        <button class="tf-btn" data-tf="M" onclick="changeTimeframe('M')">1M (10Y History)</button>
+                    <div>
+                        <div style="font-size:0.74rem; font-weight:800; color:var(--text-main);">DAILY CHART · 2 YEARS</div>
+                        <div id="mSetupSummary" style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">Loading setup evidence…</div>
                     </div>
 
                     <div style="font-size:0.72rem; color:var(--text-muted); font-weight:600;">
@@ -754,12 +796,20 @@
                         <div class="info-val" id="mAtr">0.00</div>
                     </div>
                     <div class="info-box">
-                        <div class="info-label">P/E Ratio</div>
-                        <div class="info-val" style="color:var(--accent-blue);" id="mPe">--</div>
+                        <div class="info-label">Swing Score</div>
+                        <div class="info-val" style="color:var(--accent-blue);" id="mSwingScore">--</div>
                     </div>
                     <div class="info-box">
-                        <div class="info-label">ROE %</div>
-                        <div class="info-val" style="color:var(--accent-emerald);" id="mRoe">--</div>
+                        <div class="info-label">Volume vs 20D</div>
+                        <div class="info-val" style="color:var(--accent-emerald);" id="mVolumeRatio">--</div>
+                    </div>
+                    <div class="info-box">
+                        <div class="info-label">RS vs NIFTY (3M)</div>
+                        <div class="info-val" id="mRelativeStrength">--</div>
+                    </div>
+                    <div class="info-box">
+                        <div class="info-label">Signal Data Date</div>
+                        <div class="info-val" id="mDataDate">--</div>
                     </div>
                 </div>
             </div>
@@ -841,7 +891,7 @@
                 <!-- TECHNICAL PATTERN EVIDENCE CHECKLIST -->
                 <div class="fund-card">
                     <div class="fund-title" style="color:var(--accent-blue)">
-                        🎯 VCP Technical Setup Evidence Checklist
+                        Setup Evidence & Risk Checklist
                     </div>
                     <ul class="bullet-list" id="fEvidenceList"></ul>
                 </div>
@@ -851,16 +901,19 @@
 
     <script>
         let currentResults = [];
-        let topPicksResults = [];
-        let ipoBreakoutsResults = [];
+        let dailyFocusResults = [];
+        let watchCandidatesResults = [];
+        let marketSnapshot = {};
         let watchlistResults = [];
         let watchlistTickers = new Set();
-        let activeTab = 'ALL';
-        let currentSort = { col: 'swing_score', dir: 'desc' };
+        let activeTab = 'daily_focus';
+        let currentSort = { col: 'focus_score', dir: 'desc' };
         let activeStock = null;
-        let currentInterval = 'D';
         let lwChart = null;
         let candleSeriesRef = null;
+        let chartResizeObserver = null;
+        let chartRequestId = 0;
+        let watchlistPollTimer = null;
         let activeModalView = 'chart';
         // Client-side universe result cache to avoid redundant API calls
         const universeResultCache = new Map();
@@ -868,7 +921,7 @@
         async function loadUniverses() {
             try {
                 const sel = document.getElementById('universeSelect');
-                const curr = (sel && sel.value) ? sel.value : 'nifty200';
+                const curr = (sel && sel.value) ? sel.value : 'nifty500';
                 const res = await fetch('/api/universes');
                 const data = await res.json();
                 if (data.success && data.universes) {
@@ -902,8 +955,8 @@
         let isPolling = false;
         async function loadCached(forceRefresh = false) {
             const sel = document.getElementById('universeSelect');
-            let uni = (sel && sel.value) ? sel.value : 'nifty200';
-            if (!uni) uni = 'nifty200';
+            let uni = (sel && sel.value) ? sel.value : 'nifty500';
+            if (!uni) uni = 'nifty500';
 
             // Check client-side cache first (instant switch between already-loaded universes)
             if (!forceRefresh && universeResultCache.has(uni)) {
@@ -948,38 +1001,41 @@
             }
         }
 
-        async function loadTopPicks() {
-            document.getElementById('scanStatusText').innerText = "Ranking fresh breakout and near-pivot setups...";
+        async function loadDailyFocus() {
+            document.getElementById('scanStatusText').innerText = "Building today’s decision list...";
             try {
-                const res = await fetch('/api/results/top_picks');
+                const res = await fetch('/api/results/daily_focus');
                 const data = await res.json();
                 if (data.success) {
-                    topPicksResults = data.results || [];
+                    dailyFocusResults = data.trade_now || [];
+                    watchCandidatesResults = data.watch_for_trigger || [];
+                    marketSnapshot = data.market || {};
+                    updateMarketSnapshot();
                     populateSectors();
                     renderResults();
-                    document.getElementById('scanStatusText').innerText = `Loaded ${topPicksResults.length} actionable setups`;
+                    document.getElementById('scanStatusText').innerText = data.is_scanning
+                        ? `Refreshing focus universes… ${dailyFocusResults.length} confirmed now`
+                        : `${dailyFocusResults.length} confirmed • ${watchCandidatesResults.length} waiting for trigger`;
+                    if (data.is_scanning) setTimeout(loadDailyFocus, 5000);
                 }
             } catch(e) {
-                console.error("loadTopPicks error:", e);
-                document.getElementById('scanStatusText').innerText = "Failed to load Breakout Radar";
+                console.error("loadDailyFocus error:", e);
+                document.getElementById('scanStatusText').innerText = "Failed to load Daily Focus";
             }
         }
 
-        async function loadIpoBreakouts() {
-            document.getElementById('scanStatusText').innerText = "Analyzing recent IPO patterns & breakouts...";
-            try {
-                const res = await fetch('/api/results/ipo_breakouts');
-                const data = await res.json();
-                if (data.success) {
-                    ipoBreakoutsResults = data.results || [];
-                    populateSectors();
-                    renderResults();
-                    document.getElementById('scanStatusText').innerText = `Loaded ${ipoBreakoutsResults.length} IPO Breakout setups`;
-                }
-            } catch(e) {
-                console.error("loadIpoBreakouts error:", e);
-                document.getElementById('scanStatusText').innerText = "Failed to load IPO Breakouts";
-            }
+        function updateMarketSnapshot() {
+            const label = marketSnapshot.label || 'Waiting';
+            const mode = marketSnapshot.risk_mode || 'unknown';
+            const badge = document.getElementById('marketMode');
+            badge.innerText = label;
+            badge.style.color = mode === 'normal' ? 'var(--accent-emerald)' : mode === 'risk_off' ? 'var(--accent-rose)' : 'var(--accent-amber)';
+            badge.style.background = mode === 'normal' ? 'rgba(5,150,105,.1)' : mode === 'risk_off' ? 'rgba(220,38,38,.1)' : 'rgba(217,119,6,.1)';
+            document.getElementById('marketMessage').innerText = marketSnapshot.message || 'Waiting for a complete focus scan.';
+            document.getElementById('statMarket').innerText = label;
+            document.getElementById('statTrade').innerText = dailyFocusResults.length;
+            document.getElementById('statWatch').innerText = watchCandidatesResults.length;
+            document.getElementById('statBreadth').innerText = Number.isFinite(marketSnapshot.breadth_pct) ? `${marketSnapshot.breadth_pct.toFixed(0)}%` : '—';
         }
 
         async function loadWatchlist() {
@@ -991,7 +1047,16 @@
                     watchlistTickers = new Set(data.tickers || []);
                     populateSectors();
                     renderResults();
-                    document.getElementById('scanStatusText').innerText = `Loaded ${watchlistResults.length} Watchlist stocks (${data.tickers.length} in list)`;
+                    if (activeStock && document.getElementById('detailModal').style.display === 'flex') {
+                        updateStockNavigationState();
+                    }
+                    document.getElementById('scanStatusText').innerText = data.is_scanning
+                        ? `Refreshing watchlist data… ${watchlistResults.length}/${data.tickers.length} ready`
+                        : `Loaded ${watchlistResults.length} Watchlist stocks (${data.tickers.length} in list)`;
+                    if (data.is_scanning && activeTab === 'watchlist') {
+                        clearTimeout(watchlistPollTimer);
+                        watchlistPollTimer = setTimeout(loadWatchlist, 3000);
+                    }
                 }
             } catch(e) {
                 console.error("loadWatchlist error:", e);
@@ -1051,24 +1116,28 @@
         async function runScan() {
             const btn = document.getElementById('scanBtn');
             const sel = document.getElementById('universeSelect');
-            let uni = (sel && sel.value) ? sel.value : 'nifty200';
+            let uni = (sel && sel.value) ? sel.value : 'nifty500';
+            const focusMode = activeTab === 'daily_focus' || activeTab === 'watch_trigger';
+            const scanUniverses = focusMode ? ['nifty500', 'ipo'] : [uni];
             btn.disabled = true;
             btn.innerHTML = '<span class="loader"></span> Scanning...';
-            document.getElementById('scanStatusText').innerText = `⏳ Scanning ${uni} universe... Auto-refreshing...`;
+            document.getElementById('scanStatusText').innerText = focusMode
+                ? 'Refreshing Nifty 500 and recent listings…'
+                : `Scanning ${uni} universe... Auto-refreshing...`;
 
             try {
-                const res = await fetch('/api/scan', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ universe: uni, min_score: 0 })
-                });
-                const data = await res.json();
-                if (data.success) {
+                const responses = await Promise.all(scanUniverses.map(universe => fetch('/api/scan', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ universe, min_score: 0 })
+                    }).then(res => res.json())));
+                if (responses.every(data => data.success)) {
                     let pollCount = 0;
                     const poller = setInterval(async () => {
                         pollCount++;
-                        await loadCached(true);
-                        if (currentResults.length > 0 || pollCount >= 10) {
+                        if (focusMode) await loadDailyFocus();
+                        else await loadCached(true);
+                        if (pollCount >= 20) {
                             clearInterval(poller);
                             btn.disabled = false;
                             btn.innerHTML = '⚡ Run Scan';
@@ -1084,7 +1153,7 @@
         }
 
         function populateSectors() {
-            const allItems = [...currentResults, ...topPicksResults, ...ipoBreakoutsResults, ...watchlistResults];
+            const allItems = [...currentResults, ...dailyFocusResults, ...watchCandidatesResults, ...watchlistResults];
             const sectors = new Set(allItems.map(r => r.sector).filter(Boolean));
             const sel = document.getElementById('sectorSelect');
             const curr = sel.value;
@@ -1095,6 +1164,13 @@
             sel.value = sectors.has(curr) ? curr : 'ALL';
         }
 
+        function getActiveDataset() {
+            if (activeTab === 'daily_focus') return dailyFocusResults;
+            if (activeTab === 'watch_trigger') return watchCandidatesResults;
+            if (activeTab === 'watchlist') return watchlistResults;
+            return currentResults;
+        }
+
         async function switchTab(tab, btn) {
             activeTab = tab;
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -1102,19 +1178,14 @@
 
             const th = document.getElementById('thRatingHeader');
             if (th) {
-                if (tab === 'breakout') th.innerHTML = 'Breakout Rating ↕';
-                else if (tab === 'ready') th.innerHTML = 'Pivot Readiness ↕';
-                else if (tab === 'forming') th.innerHTML = 'Base Quality Rating ↕';
-                else if (tab === 'top_picks') th.innerHTML = 'Swing Setup Score ↕';
-                else if (tab === 'ipo_breakouts') th.innerHTML = 'IPO Rating ↕';
-                else if (tab === 'watchlist') th.innerHTML = 'Watchlist Rating ↕';
-                else th.innerHTML = 'Swing Setup Score ↕';
+                if (tab === 'daily_focus') th.innerHTML = 'Focus Quality ↕';
+                else if (tab === 'watch_trigger') th.innerHTML = 'Trigger Quality ↕';
+                else if (tab === 'watchlist') th.innerHTML = 'Watchlist Quality ↕';
+                else th.innerHTML = 'Setup Quality ↕';
             }
 
-            if (tab === 'top_picks') {
-                await loadTopPicks();
-            } else if (tab === 'ipo_breakouts') {
-                await loadIpoBreakouts();
+            if (tab === 'daily_focus' || tab === 'watch_trigger') {
+                await loadDailyFocus();
             } else if (tab === 'watchlist') {
                 await loadWatchlist();
             } else {
@@ -1162,10 +1233,10 @@
             const minScore = parseInt(document.getElementById('minScoreInput').value) || 0;
             const fundOnly = document.getElementById('fundOnlyToggle') ? document.getElementById('fundOnlyToggle').checked : false;
 
-            const dataset = activeTab === 'top_picks' ? topPicksResults : (activeTab === 'ipo_breakouts' ? ipoBreakoutsResults : (activeTab === 'watchlist' ? watchlistResults : currentResults));
+            const dataset = getActiveDataset();
 
             let filtered = dataset.filter(r => {
-                const filterScore = r.swing_score !== undefined ? r.swing_score : r.vcp_score;
+                const filterScore = r.focus_score !== undefined ? r.focus_score : (r.swing_score !== undefined ? r.swing_score : r.vcp_score);
                 if (filterScore < minScore) return false;
                 if (fundOnly) {
                     if (!r.is_fundamentally_sound) return false;
@@ -1173,23 +1244,15 @@
                     if (r.pe_ratio !== null && (r.pe_ratio <= 0 || r.pe_ratio > 75.0)) return false;
                     if (r.profit_margin_pct !== null && r.profit_margin_pct < 3.0) return false;
                 }
-                if (activeTab !== 'ALL' && activeTab !== 'top_picks' && activeTab !== 'ipo_breakouts' && activeTab !== 'watchlist' && r.status !== activeTab) return false;
                 if (sector !== 'ALL' && r.sector !== sector) return false;
                 if (search && !r.ticker.toUpperCase().includes(search) && !r.name.toUpperCase().includes(search)) return false;
                 return true;
             });
 
-            document.getElementById('statTotal').innerText = currentResults.length;
-            document.getElementById('statFund').innerText = currentResults.filter(r => r.is_fundamentally_sound || getFundamentalScore(r) >= 50).length;
-            document.getElementById('statBreakout').innerText = currentResults.filter(r => r.status === 'breakout').length;
-            document.getElementById('statForming').innerText = currentResults.filter(r => r.status === 'forming').length;
+            updateMarketSnapshot();
 
             filtered.sort((a, b) => {
                 let sortCol = currentSort.col;
-                if (sortCol === 'vcp_score') {
-                    if (activeTab === 'breakout') sortCol = 'breakout_score';
-                    else if (activeTab === 'forming') sortCol = 'base_quality_score';
-                }
                 let valA = sortCol === 'fundamental_score' ? getFundamentalScore(a) : (a[sortCol] !== undefined ? a[sortCol] : a.vcp_score);
                 let valB = sortCol === 'fundamental_score' ? getFundamentalScore(b) : (b[sortCol] !== undefined ? b[sortCol] : b.vcp_score);
                 if (typeof valA === 'string') return currentSort.dir === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
@@ -1215,14 +1278,14 @@
                         <div>💎 No stocks in this selection match the strict <strong>High Fundamental Quality</strong> filter.</div>
                         <div style="font-size:0.8rem; margin-top:0.4rem;">Uncheck <strong>'High Fundamentals Only'</strong> to view all technical setups.</div>
                     </td></tr>`;
-                } else if (activeTab === 'ipo_breakouts') {
+                } else if (activeTab === 'daily_focus') {
                     tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:3rem; color:var(--text-muted);">
-                        <div>🐣 No active IPO Breakout patterns detected right now.</div>
-                        <div style="font-size:0.8rem; margin-top:0.4rem;">Select <strong>'Recent IPOs & Listings'</strong> from the Universe dropdown to view all recent IPO listings.</div>
+                        <div style="font-weight:800; color:var(--text-main);">No confirmed trade meets every gate today.</div>
+                        <div style="font-size:0.8rem; margin-top:0.4rem;">That is a valid risk decision—not a scanner failure. Prepare from Watch For Trigger instead.</div>
                     </td></tr>`;
-                } else if (activeTab === 'breakout') {
+                } else if (activeTab === 'watch_trigger') {
                     tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:3rem; color:var(--text-muted);">
-                        <div>🚀 No confirmed volume breakouts in this universe right now.</div>
+                        <div>No liquid leaders are close enough to a valid trigger right now.</div>
                     </td></tr>`;
                 } else {
                     tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:3rem; color:var(--text-muted);">No stocks match the selected search/sector filters.</td></tr>`;
@@ -1234,18 +1297,9 @@
                 let tabScore = r.vcp_score;
                 let tabGrade = r.vcp_grade || '';
 
-                if (activeTab === 'breakout') {
-                    tabScore = r.breakout_score !== undefined ? r.breakout_score : r.vcp_score;
-                    tabGrade = r.breakout_grade || '🚀 Breakout Confirmed';
-                } else if (activeTab === 'ready') {
-                    tabScore = r.pivot_readiness_score !== undefined ? r.pivot_readiness_score : r.vcp_score;
-                    tabGrade = r.pivot_readiness_grade || '🎯 Near Pivot';
-                } else if (activeTab === 'forming') {
-                    tabScore = r.base_quality_score !== undefined ? r.base_quality_score : r.vcp_score;
-                    tabGrade = r.base_quality_grade || '⏳ Forming Base';
-                } else if (activeTab === 'top_picks') {
-                    tabScore = r.swing_score !== undefined ? r.swing_score : r.vcp_score;
-                    tabGrade = r.vcp_grade || `${r.setup_type || 'Swing Setup'}`;
+                if (activeTab === 'daily_focus' || activeTab === 'watch_trigger') {
+                    tabScore = r.focus_score !== undefined ? r.focus_score : (r.swing_score !== undefined ? r.swing_score : r.vcp_score);
+                    tabGrade = `${r.focus_grade || ''} ${r.setup_family || r.setup_type || 'Swing Setup'}`.trim();
                 } else if (r.swing_score !== undefined) {
                     tabScore = r.swing_score;
                     tabGrade = `${r.setup_type || 'Setup'} • Technical ${r.vcp_score}/100`;
@@ -1253,11 +1307,6 @@
 
                 const scoreClass = tabScore >= 65 ? 'score-high' : tabScore >= 40 ? 'score-mid' : 'score-low';
                 const fScore = r.fundamental_score !== undefined && r.fundamental_score !== null ? r.fundamental_score : getFundamentalScore(r);
-                const fTier = r.fundamental_tier || (fScore >= 90 ? 'Excellent' : fScore >= 80 ? 'Very Strong' : fScore >= 70 ? 'Good' : fScore >= 60 ? 'Average' : fScore >= 50 ? 'Weak' : 'Poor');
-                const fColor = r.fundamental_color || (fScore >= 90 ? '#047857' : fScore >= 80 ? '#10b981' : fScore >= 70 ? '#34d399' : fScore >= 60 ? '#f59e0b' : fScore >= 50 ? '#f97316' : '#ef4444');
-                const statusClass = `status-${r.status}`;
-                const chgColor = r.change_pct >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)';
-                const chgSign = r.change_pct >= 0 ? '+' : '';
 
                 const minPrice = Math.min(...(r.chart_data || [1]));
                 const maxPrice = Math.max(...(r.chart_data || [1]));
@@ -1272,9 +1321,12 @@
                 const categoryBadge = setupBadge
                     ? `<span style="background:rgba(124, 58, 237, 0.1); color:var(--accent-purple); border:1px solid rgba(124, 58, 237, 0.3); font-size:0.7rem; font-weight:700; padding:0.15rem 0.4rem; border-radius:0.3rem; display:inline-block;">${setupBadge}</span>`
                     : '';
-                const fundBadge = r.is_fundamentally_sound 
-                    ? `<span title="Fundamentally Strong (Positive ROE & EPS)" style="font-size:0.75rem; margin-left:0.2rem; cursor:help;">💎</span>` 
-                    : '';
+                const state = r.trade_state || (r.status === 'breakout' ? 'trade_now' : r.status === 'ready' ? 'watch_trigger' : 'avoid');
+                const decisionText = state === 'trade_now' ? 'TRADE NOW' : state === 'watch_trigger' ? 'WAIT FOR TRIGGER' : 'RESEARCH';
+                const decisionClass = state === 'trade_now' ? 'decision-trade' : 'decision-watch';
+                const evidence = r.selection_reason || (r.evidence || []).slice(0, 2).join(' • ') || 'No confirming evidence yet';
+                const rsText = Number.isFinite(r.rs_3m_pct) ? `${r.rs_3m_pct >= 0 ? '+' : ''}${r.rs_3m_pct.toFixed(1)}%` : 'N/A';
+                const pivotGap = Number.isFinite(r.breakout_distance_pct) ? `${r.breakout_distance_pct > 0 ? '+' : ''}${r.breakout_distance_pct.toFixed(1)}%` : 'N/A';
                 const starIcon = `<span onclick="event.stopPropagation(); toggleWatchlist('${cleanTicker}');" style="cursor:pointer; font-size:0.95rem; margin-right:0.25rem; transition:transform 0.1s;" title="Toggle Watchlist">${watchlistTickers.has(cleanTicker) ? '⭐' : '☆'}</span>`;
 
                 return `
@@ -1286,38 +1338,33 @@
                             </div>
                         </td>
                         <td>
-                            <div style="display:flex; align-items:center; gap:0.35rem;">
-                                <span style="background:${fColor}22; color:${fColor}; border:1px solid ${fColor}66; font-weight:800; padding:0.2rem 0.45rem; border-radius:0.35rem; font-size:0.75rem; display:inline-flex; align-items:center; gap:0.25rem;">
-                                    💎 ${fScore} <span style="font-size:0.65rem; opacity:0.9; font-weight:700;">(${fTier})</span>
-                                </span>
-                            </div>
-                        </td>
-                        <td>
                             <div style="display:flex; align-items:center; flex-wrap:wrap; gap:0.3rem;">
-                                ${starIcon}<span style="font-weight:700; font-size:0.95rem; color:var(--accent-blue);">${r.ticker}</span>${fundBadge}
+                                ${starIcon}<span style="font-weight:800; font-size:0.95rem; color:var(--accent-blue);">${r.ticker}</span>
                                 ${categoryBadge}
                             </div>
-                            ${r.conviction_reason ? `<div style="font-size:0.72rem; color:var(--accent-emerald); font-weight:600; margin-top:0.1rem;">${r.conviction_reason}</div>` : `<div style="font-size:0.75rem; color:var(--text-muted);">${r.name}${r.data_date ? ` • Data ${r.data_date}` : ''}</div>`}
+                            <div style="font-size:0.72rem; color:var(--text-muted); margin-top:.15rem;">${r.name} • Fundamentals ${fScore}/100</div>
                         </td>
+                        <td style="max-width:310px;"><div style="font-size:.75rem; line-height:1.35; color:var(--text-sub);">${evidence}</div></td>
                         <td><span style="font-size:0.8rem; color:var(--text-sub);">${r.sector || 'NSE'}</span></td>
                         <td style="font-weight:600;">₹${r.price.toFixed(2)}</td>
-                        <td style="color:${chgColor}; font-weight:600;">${chgSign}${r.change_pct.toFixed(2)}%</td>
-                        <td><span class="status-pill ${statusClass}">${r.status}</span></td>
-                        <td>${r.contraction}</td>
-                        <td>${(r.dry_up_ratio * 100).toFixed(0)}%</td>
-                        <td>${r.breakout_distance_pct > 0 ? '+' : ''}${r.breakout_distance_pct.toFixed(1)}%</td>
+                        <td><strong>${Number.isFinite(r.volume_ratio) ? r.volume_ratio.toFixed(2) : '—'}×</strong><div style="font-size:.68rem;color:var(--text-muted);">₹${Number.isFinite(r.avg_turnover_cr) ? r.avg_turnover_cr.toFixed(0) : '—'} Cr/day</div></td>
+                        <td><span class="status-pill ${decisionClass}">${decisionText}</span></td>
+                        <td><strong style="color:var(--accent-blue);">₹${Number.isFinite(r.entry_price) ? r.entry_price.toFixed(2) : '—'}</strong><div style="font-size:.68rem;color:var(--accent-rose);">Stop ₹${Number.isFinite(r.stop_loss) ? r.stop_loss.toFixed(2) : '—'} · ${Number.isFinite(r.risk_pct) ? r.risk_pct.toFixed(1) : '—'}%</div></td>
+                        <td style="font-weight:700;color:${Number(r.rs_3m_pct) >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)'};">${rsText}</td>
+                        <td>${pivotGap}</td>
                         <td><div class="sparkline">${barsHtml}</div></td>
-                        <td><button class="btn-primary" style="padding:0.3rem 0.65rem; font-size:0.75rem;" onclick="event.stopPropagation(); openStockChartByTicker('${cleanTicker}')">📊 Chart & Info</button></td>
+                        <td><button class="btn-primary" style="padding:0.3rem 0.65rem; font-size:0.75rem;" onclick="event.stopPropagation(); openStockChartByTicker('${cleanTicker}')">Review Plan</button></td>
                     </tr>
                 `;
             }).join('');
         }
 
         function openStockChartByTicker(ticker) {
-            let stock = currentResults.find(r => r.ticker === ticker);
-            if (!stock) stock = topPicksResults.find(r => r.ticker === ticker);
-            if (!stock) stock = ipoBreakoutsResults.find(r => r.ticker === ticker);
-            if (!stock) stock = watchlistResults.find(r => r.ticker === ticker);
+            let stock = getActiveDataset().find(r => r.ticker === ticker);
+            if (!stock) {
+                stock = [...currentResults, ...dailyFocusResults, ...watchCandidatesResults, ...watchlistResults]
+                    .find(r => r.ticker === ticker);
+            }
             if (!stock) return;
             openStockChart(stock);
         }
@@ -1330,8 +1377,17 @@
             document.getElementById('mStop').innerText = (stock.stop_loss !== undefined && stock.stop_loss !== null) ? `₹${stock.stop_loss.toFixed(2)}` : 'N/A';
             document.getElementById('mRisk').innerText = (stock.risk_pct !== undefined && stock.risk_pct !== null) ? `${stock.risk_pct.toFixed(2)}%` : 'N/A';
             document.getElementById('mAtr').innerText = (stock.atr !== undefined && stock.atr !== null) ? `${stock.atr.toFixed(2)} (${(stock.atr_pct || 0).toFixed(1)}%)` : 'N/A';
-            document.getElementById('mPe').innerText = (stock.pe_ratio !== null && stock.pe_ratio !== undefined) ? stock.pe_ratio.toFixed(1) : 'N/A';
-            document.getElementById('mRoe').innerText = (stock.roe_pct !== null && stock.roe_pct !== undefined) ? `${stock.roe_pct.toFixed(1)}%` : 'N/A';
+            document.getElementById('mSwingScore').innerText = Number.isFinite(stock.swing_score) ? `${stock.swing_score}/100` : 'N/A';
+            document.getElementById('mVolumeRatio').innerText = Number.isFinite(stock.volume_ratio) ? `${stock.volume_ratio.toFixed(2)}×` : 'N/A';
+            document.getElementById('mRelativeStrength').innerText = Number.isFinite(stock.rs_3m_pct) ? `${stock.rs_3m_pct >= 0 ? '+' : ''}${stock.rs_3m_pct.toFixed(1)}%` : 'N/A';
+            document.getElementById('mDataDate').innerText = stock.data_date || 'N/A';
+            const setupSummary = document.getElementById('mSetupSummary');
+            const summaryItems = (stock.rejection_reasons && stock.rejection_reasons.length)
+                ? stock.rejection_reasons.slice(0, 2)
+                : [stock.entry_condition, stock.invalidation].filter(Boolean).slice(0, 2);
+            if (!summaryItems.length) summaryItems.push(...(stock.evidence || []).slice(0, 2));
+            setupSummary.innerText = summaryItems.length ? summaryItems.join(' • ') : 'No setup evidence available';
+            setupSummary.style.color = (stock.rejection_reasons && stock.rejection_reasons.length) ? 'var(--accent-rose)' : 'var(--text-muted)';
             
             const badge = document.getElementById('mStatusBadge');
             badge.innerText = (stock.status || 'READY').toUpperCase();
@@ -1465,35 +1521,30 @@
             const minScore = parseInt(document.getElementById('minScoreInput').value) || 0;
             const fundOnly = document.getElementById('fundOnlyToggle') ? document.getElementById('fundOnlyToggle').checked : false;
 
-            const dataset = activeTab === 'top_picks' ? topPicksResults : (activeTab === 'ipo_breakouts' ? ipoBreakoutsResults : currentResults);
+            const dataset = getActiveDataset();
 
             let filtered = dataset.filter(r => {
-                if (r.vcp_score < minScore) return false;
+                const filterScore = r.focus_score !== undefined ? r.focus_score : (r.swing_score !== undefined ? r.swing_score : r.vcp_score);
+                if (filterScore < minScore) return false;
                 if (fundOnly) {
                     if (!r.is_fundamentally_sound) return false;
                     if (r.roe_pct === null || r.roe_pct === undefined || r.roe_pct < 10.0) return false;
                     if (r.pe_ratio !== null && (r.pe_ratio <= 0 || r.pe_ratio > 75.0)) return false;
                     if (r.profit_margin_pct !== null && r.profit_margin_pct < 3.0) return false;
                 }
-                if (activeTab !== 'ALL' && activeTab !== 'top_picks' && activeTab !== 'ipo_breakouts' && r.status !== activeTab) return false;
                 if (sector !== 'ALL' && r.sector !== sector) return false;
                 if (search && !r.ticker.toUpperCase().includes(search) && !r.name.toUpperCase().includes(search)) return false;
                 return true;
             });
 
-            if (filtered.length === 0 && dataset.length > 0 && activeTab === 'ALL' && !search && sector === 'ALL') {
+            if (filtered.length === 0 && dataset.length > 0 && activeTab === 'explore' && !search && sector === 'ALL') {
                 filtered = [...dataset];
             }
 
             filtered.sort((a, b) => {
                 let sortCol = currentSort.col;
-                if (sortCol === 'vcp_score') {
-                    if (activeTab === 'breakout') sortCol = 'breakout_score';
-                    else if (activeTab === 'ready') sortCol = 'pivot_readiness_score';
-                    else if (activeTab === 'forming') sortCol = 'base_quality_score';
-                }
-                let valA = a[sortCol] !== undefined ? a[sortCol] : a.vcp_score;
-                let valB = b[sortCol] !== undefined ? b[sortCol] : b.vcp_score;
+                let valA = sortCol === 'fundamental_score' ? getFundamentalScore(a) : (a[sortCol] !== undefined ? a[sortCol] : a.vcp_score);
+                let valB = sortCol === 'fundamental_score' ? getFundamentalScore(b) : (b[sortCol] !== undefined ? b[sortCol] : b.vcp_score);
                 if (typeof valA === 'string') return currentSort.dir === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
                 return currentSort.dir === 'asc' ? valA - valB : valB - valA;
             });
@@ -1558,45 +1609,33 @@
             }
         }
 
-        function changeTimeframe(tf) {
-            currentInterval = tf;
-            document.querySelectorAll('#timeframeBar .tf-btn').forEach(btn => {
-                btn.classList.toggle('active', btn.getAttribute('data-tf') === tf);
-            });
-            renderCurrentChart();
-        }
-
         async function renderCurrentChart() {
             if (!activeStock) return;
+            const requestId = ++chartRequestId;
+            const requestedTicker = activeStock.ticker;
             const container = document.getElementById('chartContainer');
-            container.innerHTML = '<div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--text-muted);"><span class="loader"></span> &nbsp; Loading 2-Year chart history...</div>';
+            container.innerHTML = '<div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--text-muted);"><span class="loader"></span> &nbsp; Loading daily chart…</div>';
 
+            if (chartResizeObserver) {
+                chartResizeObserver.disconnect();
+                chartResizeObserver = null;
+            }
             if (lwChart) {
                 try { lwChart.remove(); } catch(e){}
                 lwChart = null;
             }
 
             try {
-                let intervalParam = '1d';
-                let periodParam = '2y';
-                
-                if (currentInterval === '1') { intervalParam = '1m'; periodParam = '5d'; }
-                else if (currentInterval === '5') { intervalParam = '5m'; periodParam = '5d'; }
-                else if (currentInterval === '15') { intervalParam = '15m'; periodParam = '1mo'; }
-                else if (currentInterval === '60') { intervalParam = '60m'; periodParam = '3mo'; }
-                else if (currentInterval === 'D') { intervalParam = '1d'; periodParam = '2y'; }
-                else if (currentInterval === 'W') { intervalParam = '1wk'; periodParam = '5y'; }
-                else if (currentInterval === 'M') { intervalParam = '1mo'; periodParam = '10y'; }
-
-                const res = await fetch(`/api/chart/${activeStock.ticker}?period=${periodParam}&interval=${intervalParam}`);
+                const res = await fetch(`/api/chart/${encodeURIComponent(requestedTicker)}?period=2y&interval=1d`);
                 const data = await res.json();
+                if (requestId !== chartRequestId || !activeStock || activeStock.ticker !== requestedTicker) return;
 
                 container.innerHTML = '';
                 if (data.success && data.candles && data.candles.length > 0) {
                     lwChart = LightweightCharts.createChart(container, {
                         width: container.clientWidth || 1080,
                         height: container.clientHeight || 380,
-                        layout: { backgroundColor: '#ffffff', textColor: '#334155' },
+                        layout: { background: { type: LightweightCharts.ColorType.Solid, color: '#ffffff' }, textColor: '#334155' },
                         grid: {
                             vertLines: { visible: true, color: '#f1f5f9' },
                             horzLines: { visible: true, color: '#f1f5f9' }
@@ -1620,7 +1659,7 @@
                     });
 
                     candleSeriesRef.priceScale().applyOptions({
-                        scaleMargins: { top: 0.05, bottom: 0.25 },
+                        scaleMargins: { top: 0.05, bottom: 0.34 },
                     });
 
                     candleSeriesRef.setData(data.candles);
@@ -1631,13 +1670,13 @@
                     });
 
                     lwChart.priceScale('volume').applyOptions({
-                        scaleMargins: { top: 0.8, bottom: 0 },
+                        scaleMargins: { top: 0.68, bottom: 0 },
                     });
 
                     volumeSeries.setData(data.candles.map(c => ({
                         time: c.time,
                         value: c.volume,
-                        color: c.close >= c.open ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.35)'
+                        color: c.close >= c.open ? 'rgba(16, 185, 129, 0.58)' : 'rgba(239, 68, 68, 0.58)'
                     })));
 
                     candleSeriesRef.createPriceLine({
@@ -1658,19 +1697,33 @@
                         title: 'Stop Loss',
                     });
 
-                    lwChart.timeScale().fitContent();
-                    lwChart.timeScale().applyOptions({ rightOffset: 12 });
+                    const lastIndex = data.candles.length - 1;
+                    lwChart.timeScale().setVisibleLogicalRange({
+                        from: Math.max(0, lastIndex - 139),
+                        to: lastIndex + 8,
+                    });
+                    chartResizeObserver = new ResizeObserver(entries => {
+                        const box = entries[0] && entries[0].contentRect;
+                        if (box && lwChart) lwChart.applyOptions({ width: box.width, height: box.height });
+                    });
+                    chartResizeObserver.observe(container);
                 } else {
-                    container.innerHTML = '<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; gap:0.5rem; color:var(--text-muted);"><div>No candle data for this timeframe.</div><button class="btn-primary" style="width:auto; padding:0.4rem 0.8rem; font-size:0.75rem;" onclick="changeTimeframe(\'D\')">Switch to Daily (1D)</button></div>';
+                    container.innerHTML = '<div style="display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-muted);">No daily candle data available.</div>';
                 }
             } catch(e) {
+                if (requestId !== chartRequestId) return;
                 container.innerHTML = '<div style="display:flex; align-items:center; justify-content:center; height:100%; color:var(--accent-rose);">Error loading chart data.</div>';
             }
         }
 
         function closeModal() {
+            chartRequestId++;
             document.getElementById('detailModal').style.display = 'none';
             document.getElementById('chartContainer').innerHTML = '';
+            if (chartResizeObserver) {
+                chartResizeObserver.disconnect();
+                chartResizeObserver = null;
+            }
             if (lwChart) {
                 try { lwChart.remove(); } catch(e){}
                 lwChart = null;
@@ -1687,6 +1740,7 @@
             await loadWatchlist();
             await loadCached();
             await loadUniverses();
+            await loadDailyFocus();
         }
 
         if (document.readyState === 'loading') {
