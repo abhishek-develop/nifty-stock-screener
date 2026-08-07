@@ -9,12 +9,13 @@ A complete **web-based VCP scanner** for Indian stocks (NSE/BSE) that runs on yo
 ## ✨ Features
 
 - **Real-time scanning** of NSE stocks via Yahoo Finance
-- **VCP Score (0-100)** based on 5 factors:
-  - Price tightness
-  - Volume contraction
-  - Range compression
-  - ATR compression
-  - Days in tight range
+- **Breakout Radar (0-100)** based on observable daily-market evidence:
+  - Confirmed close above the pivot (a wick alone does not count)
+  - Volume expansion for breakouts / volume dry-up before breakouts
+  - Stage-2 moving-average trend, including a rising 200-day average
+  - Three-window volatility contraction and price tightness
+  - 3/6-month relative strength versus NIFTY 50
+  - Liquidity, data freshness, extension, and defined-stop risk gates
 - **Auto-scan** every 30 minutes during market hours (9:15 AM - 3:30 PM IST)
 - **Multiple universes**: IPOs, Nifty 500, Nifty 200, Smallcap 100, Custom
 - **Visual dashboard** with mini charts, volume bars, and score rings
@@ -87,7 +88,7 @@ vcp-scanner/
 1. **Select Universe**: Choose from IPOs, Nifty 500, Nifty 200, Smallcap, or enter custom tickers
 2. **Set Filters**: Min VCP score (70+ recommended), price range
 3. **Click "Scan Now"**: Fetches fresh data and calculates VCP scores
-4. **View Results**: Filter by tabs (All, VCP Ready, Forming, Breakout, Weak)
+4. **View Results**: Start with Breakout Radar, then inspect Confirmed Breakouts and Near Pivot setups
 5. **Click "Detail"**: See full analysis with trade setup
 6. **Export CSV**: Download results for Excel/further analysis
 
@@ -98,6 +99,7 @@ vcp-scanner/
 | `/` | GET | Main dashboard |
 | `/api/scan` | POST | Run scan with filters |
 | `/api/results/<universe>` | GET | Get cached results |
+| `/api/results/top_picks` | GET | Get up to 15 actionable breakout-radar candidates |
 | `/api/stock/<ticker>` | GET | Single stock detail |
 | `/api/universes` | GET | List available universes |
 | `/api/status` | GET | Scanner status |
@@ -124,21 +126,12 @@ To customize the schedule, edit the `scheduler.add_job()` calls in `vcp_scanner_
 
 ---
 
-## 🎯 VCP Score Explained
+## 🎯 Signal Definitions
 
-| Factor | Weight | Ideal |
-|--------|--------|-------|
-| Price Tightness | 25% | < 2% std dev |
-| Volume Contraction | 25% | > 30% decline |
-| Range Compression | 20% | < 5% range |
-| ATR Compression | 15% | < 2% of price |
-| Days in Range | 15% | 15+ days |
-
-**Status:**
-- 🟢 **VCP Ready** (80+ score): Tight consolidation, volume dried up — watch for breakout
-- 🟡 **Forming** (65+ score): Pattern developing — monitor closely
-- 🔵 **Breakout**: Volume spike + price near resistance — may have already broken out
-- 🔴 **Weak**: Doesn't meet criteria — avoid
+- **Fresh Breakout:** daily close at least 0.3% above the prior 20-session high, at least 1.3× baseline volume, valid contracting base, strong trend, and no excessive extension.
+- **Breakout Watch:** within 5% of the pivot with a valid base and Stage-2 trend. It is not a buy trigger.
+- **Actionable:** score of at least 65, fresh data, average turnover of at least ₹5 Cr/day, price of at least ₹20, and stop risk no greater than 8%.
+- **Rejected:** the API exposes explicit reasons such as stale data, low liquidity, weak trend, pivot rejection, excessive extension, or wide stop risk.
 
 ---
 
@@ -196,7 +189,10 @@ Since the app runs on `0.0.0.0:5000`, you can access it from any device on your 
 
 ## ⚠️ Important Notes
 
-- **Data Source**: Yahoo Finance (free, ~15 min delay). Not suitable for high-frequency trading.
+- **Universes**: Index membership comes from official NSE constituent CSVs; arbitrary equity-master slices are never labeled as Nifty indexes.
+- **Data Source**: Yahoo Finance fallback data may be delayed. Zerodha credentials are preferred when configured. Not suitable for intraday execution or high-frequency trading.
+- **Corporate actions**: Yahoo OHLC data is adjusted for splits/dividends before technical calculations.
+- **Research only**: A high score is a probability-ranked setup, not a forecast or assurance of returns.
 - **Rate Limits**: Yahoo may throttle requests. For large universes, add `time.sleep()` between calls.
 - **NSE Tickers**: Must end with `.NS` (e.g., `RELIANCE.NS`)
 - **Not Financial Advice**: This is a research tool. Always do your own analysis.

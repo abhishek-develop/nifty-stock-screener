@@ -28,6 +28,7 @@ import hashlib
 import time
 from io import StringIO
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass, asdict, field
 from typing import List, Dict, Optional, Tuple, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -52,11 +53,21 @@ _app_start_time = time.time()
 
 
 DYNAMIC_UNIVERSE_CACHE_FILE = 'dynamic_universes.json'
+UNIVERSE_SOURCE_VERSION = 2
 dynamic_universes: Dict[str, List[str]] = {}
 dynamic_metadata: Dict[str, Dict] = {}
+dynamic_universe_source_version = 0
+
+OFFICIAL_INDEX_FILES = {
+    "nifty50": "ind_nifty50list.csv",
+    "nifty200": "ind_nifty200list.csv",
+    "nifty500": "ind_nifty500list.csv",
+    "smallcap": "ind_niftysmallcap100list.csv",
+}
 
 STOCK_UNIVERSES = {"custom": []}
 CACHE_FILE = 'scan_cache.json'
+SCAN_SCHEMA_VERSION = 2
 scan_cache = {"last_scan": None, "results": {}, "is_scanning": False, "errors": []}
 scan_cache_lock = threading.Lock()
 chart_cache_memory = {}
@@ -126,12 +137,14 @@ def fetch_dynamic_nse_equities() -> List[Dict]:
                 
                 if exchange == "NSE" and segment == "NSE" and instrument_type == "EQ" and tradingsymbol:
                     kite_symbols.add(tradingsymbol)
-                    if tradingsymbol not in dynamic_metadata:
-                        dynamic_metadata[tradingsymbol] = {
-                            "name": item.get("name") or tradingsymbol,
-                            "sector": "NSE Equities",
-                            "listing_date": ""
-                        }
+                    existing = dynamic_metadata.get(tradingsymbol, {})
+                    dynamic_metadata[tradingsymbol] = {
+                        **existing,
+                        "name": item.get("name") or existing.get("name") or tradingsymbol,
+                        "sector": existing.get("sector") or "NSE Equities",
+                        "listing_date": existing.get("listing_date", ""),
+                        "instrument_token": item.get("instrument_token") or existing.get("instrument_token", ""),
+                    }
 
             if not equities:
                 for sym in sorted(kite_symbols):
@@ -147,21 +160,57 @@ def fetch_dynamic_nse_equities() -> List[Dict]:
     return equities
 
 
+def fetch_official_index_constituents() -> Dict[str, List[str]]:
+    """Fetch genuine NSE index members instead of inventing indexes from master-file order."""
+    headers = {'User-Agent': 'Mozilla/5.0 (compatible; NSE-Swing-Scanner/2.0)'}
+    result: Dict[str, List[str]] = {}
+    for universe, filename in OFFICIAL_INDEX_FILES.items():
+        url = f"https://nsearchives.nseindia.com/content/indices/{filename}"
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+            index_df = pd.read_csv(StringIO(response.text))
+            symbol_col = next((c for c in index_df.columns if str(c).strip().lower() == "symbol"), None)
+            if not symbol_col:
+                raise ValueError("Symbol column missing")
+            symbols = [str(s).strip().upper() for s in index_df[symbol_col].dropna()]
+            symbols = list(dict.fromkeys(s for s in symbols if s))
+            if symbols:
+                result[universe] = [f"{symbol}.NS" for symbol in symbols]
+                for _, row in index_df.iterrows():
+                    symbol = str(row.get(symbol_col, "")).strip().upper()
+                    if not symbol:
+                        continue
+                    name = row.get("Company Name") or row.get("Company_Name") or symbol
+                    industry = row.get("Industry") or "NSE Equities"
+                    dynamic_metadata.setdefault(symbol, {})
+                    dynamic_metadata[symbol].update({"name": str(name).strip(), "sector": str(industry).strip()})
+        except Exception as exc:
+            scan_cache["errors"].append(f"Official {universe} constituent fetch failed: {exc}")
+    return result
+
+
 def sync_dynamic_universes():
     """Fetch and organize stock universes dynamically from live APIs."""
+    global dynamic_universe_source_version
     print("🌐 Syncing stock universes dynamically from official NSE & Zerodha APIs...")
     raw_equities = fetch_dynamic_nse_equities()
+    official_indexes = fetch_official_index_constituents()
     if not raw_equities:
         print("⚠️ Warning: Dynamic API fetch yielded no rows. Loading cached dynamic universes if available.")
         load_dynamic_universe_cache()
+        for universe, tickers in official_indexes.items():
+            dynamic_universes[universe] = tickers
         return
 
     for eq in raw_equities:
         sym = eq['symbol']
+        existing_meta = dynamic_metadata.get(sym, {})
         dynamic_metadata[sym] = {
             "name": eq['name'],
             "sector": "NSE Equities",
-            "listing_date": eq['listing_date']
+            "listing_date": eq['listing_date'],
+            "instrument_token": existing_meta.get("instrument_token", ""),
         }
 
     all_tickers = [eq['ticker'] for eq in raw_equities]
@@ -172,16 +221,20 @@ def sync_dynamic_universes():
     if len(ipo_tickers) < 15:
         ipo_tickers = [eq['ticker'] for eq in raw_equities if eq['listing_date']][:40]
 
-    # 2. Dynamic market slices
-    dynamic_universes["nifty50"] = all_tickers[:50]
-    dynamic_universes["nifty200"] = all_tickers[:200]
-    dynamic_universes["nifty500"] = all_tickers[:500]
-    dynamic_universes["smallcap"] = all_tickers[200:450] if len(all_tickers) >= 450 else all_tickers[50:200]
+    # 2. Official index universes. Never label arbitrary equity-master slices as indexes.
+    for universe in ["nifty50", "nifty200", "nifty500", "smallcap"]:
+        if official_indexes.get(universe):
+            dynamic_universes[universe] = official_indexes[universe]
+        elif not dynamic_universes.get(universe):
+            # Honest fallback: expose a broad NSE set without pretending it is a real index.
+            dynamic_universes[universe] = all_tickers
     dynamic_universes["ipo"] = ipo_tickers
     dynamic_universes["nse_all"] = all_tickers[:1000]
 
     try:
         cache_data = {
+            "source_version": UNIVERSE_SOURCE_VERSION,
+            "source": "Official NSE constituent files + NSE equity master",
             "last_synced": datetime.now().isoformat(),
             "total_nse_stocks": len(all_tickers),
             "universes": dynamic_universes,
@@ -189,7 +242,8 @@ def sync_dynamic_universes():
         }
         with open(DYNAMIC_UNIVERSE_CACHE_FILE, 'w') as f:
             json.dump(cache_data, f, indent=2)
-        print(f"✅ Dynamically synced {len(all_tickers)} active NSE equities into dynamic universes!")
+        dynamic_universe_source_version = UNIVERSE_SOURCE_VERSION
+        print(f"✅ Synced {len(all_tickers)} NSE equities and official index constituents!")
     except Exception as exc:
         print(f"Error saving dynamic universe cache: {exc}")
 
@@ -201,16 +255,17 @@ def load_dynamic_universe_cache():
     try:
         with open(DYNAMIC_UNIVERSE_CACHE_FILE, 'r') as f:
             data = json.load(f)
-        global dynamic_universes, dynamic_metadata
+        global dynamic_universes, dynamic_metadata, dynamic_universe_source_version
         dynamic_universes = data.get("universes", {})
         dynamic_metadata = data.get("metadata", {})
+        dynamic_universe_source_version = int(data.get("source_version", 0) or 0)
         print(f"📁 Loaded {sum(len(v) for v in dynamic_universes.values())} tickers across dynamic universes from cache.")
     except Exception as exc:
         print(f"Error loading dynamic universe cache: {exc}")
 
 
 load_dynamic_universe_cache()
-if not dynamic_universes:
+if (not dynamic_universes or dynamic_universe_source_version < UNIVERSE_SOURCE_VERSION) and os.getenv("VCP_SKIP_UNIVERSE_SYNC") != "1":
     sync_dynamic_universes()
 
 
@@ -389,6 +444,7 @@ def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval:
             chart_data = result[0]
             timestamps = chart_data.get("timestamp", [])
             indicators = chart_data.get("indicators", {}).get("quote", [{}])[0]
+            adjusted = chart_data.get("indicators", {}).get("adjclose", [{}])[0].get("adjclose", [])
 
             if not timestamps or not indicators:
                 return None
@@ -400,6 +456,15 @@ def fetch_stock_data_direct_chart_api(ticker: str, period: str = "2y", interval:
                 "close": indicators.get("close", []),
                 "volume": indicators.get("volume", []),
             }, index=pd.to_datetime(timestamps, unit="s"))
+
+            # Adjust all OHLC prices for splits/dividends. Unadjusted histories create
+            # artificial gaps, ranges and moving-average crosses around corporate actions.
+            if adjusted and len(adjusted) == len(df):
+                adj = pd.to_numeric(pd.Series(adjusted, index=df.index), errors="coerce")
+                raw_close = pd.to_numeric(df["close"], errors="coerce")
+                factor = (adj / raw_close).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+                for price_col in ["open", "high", "low", "close"]:
+                    df[price_col] = pd.to_numeric(df[price_col], errors="coerce") * factor
 
             return clean_ohlcv(df)
         except Exception as exc:
@@ -422,7 +487,7 @@ def fetch_stock_data_yahoo(ticker: str, period: str = "2y", interval: str = "1d"
             old_stderr = sys.stderr
             sys.stderr = devnull
             try:
-                df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False, threads=False)
+                df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True, threads=False)
             finally:
                 sys.stderr = old_stderr
         cleaned = clean_ohlcv(df)
@@ -445,7 +510,11 @@ def fetch_stock_data_zerodha(ticker: str) -> Optional[pd.DataFrame]:
     try:
         to_date = datetime.now().date()
         from_date = to_date - timedelta(days=730)
-        token = ticker.replace(".NS", "")
+        clean_symbol = normalize_ticker(ticker)
+        token = dynamic_metadata.get(clean_symbol, {}).get("instrument_token")
+        if not token:
+            scan_cache["errors"].append(f"{clean_symbol}: Zerodha instrument token unavailable")
+            return None
         response = requests.get(
             f"https://api.kite.trade/instruments/historical/{token}/day",
             headers=headers,
@@ -526,6 +595,7 @@ class VCPResult:
     support_level: float
     resistance_level: float
     entry_price: float
+    max_entry_price: float
     stop_loss: float
     risk_pct: float
     breakout_distance_pct: float
@@ -537,6 +607,19 @@ class VCPResult:
     days_in_range: int
     avg_volume_20d: float
     current_volume: float
+    avg_turnover_cr: float
+    rs_3m_pct: Optional[float]
+    rs_6m_pct: Optional[float]
+    relative_strength_score: int
+    swing_score: int
+    setup_type: str
+    setup_quality: str
+    actionable: bool
+    rejection_reasons: List[str]
+    data_date: str
+    data_age_business_days: int
+    signal_bar_complete: bool
+    market_regime: str
     pe_ratio: Optional[float]
     roe_pct: Optional[float]
     profit_margin_pct: Optional[float]
@@ -755,7 +838,7 @@ def fetch_fundamental_metrics(ticker: str) -> Dict:
         eps = info.get('trailingEps') or info.get('forwardEps')
         pe_val = pe_fast or info.get('trailingPE') or info.get('forwardPE')
         roe = info.get('returnOnEquity')
-        roa = info.get('returnOnAssets')
+        roce = info.get('returnOnCapital')
         debt_to_equity = info.get('debtToEquity')
         profit_margin = info.get('profitMargins')
         operating_margin = info.get('operatingMargins')
@@ -774,29 +857,19 @@ def fetch_fundamental_metrics(ticker: str) -> Dict:
         metrics["gross_margin"] = round(float(gross_margin * 100), 2) if gross_margin is not None else None
         metrics["revenue_growth"] = round(float(rev_growth * 100), 2) if rev_growth is not None else None
         metrics["earnings_growth"] = round(float(earnings_growth * 100), 2) if earnings_growth is not None else None
+        metrics["roce"] = round(float(roce * 100), 2) if roce is not None else None
 
-        # === ROCE (Return on Capital Employed) ===
-        # Approximate: EBIT / (Total Assets - Current Liabilities) or use ROA as proxy
+        # Never manufacture ROCE or interest coverage from broad assumptions. Missing
+        # vendor fields stay missing and the scoring engine redistributes their weight.
         ebitda_val = info.get('ebitda')
         total_revenue = info.get('totalRevenue')
-        if ebitda_val and total_revenue and total_revenue > 0:
-            # ROCE ≈ EBIT margin × asset turnover; approximate with operating margin × 2 as rough proxy
-            if operating_margin is not None:
-                metrics["roce"] = round(float(operating_margin * 100 * 1.5), 2)  # Rough proxy
-        if metrics["roce"] is None and roa is not None:
-            metrics["roce"] = round(float(roa * 100 * 2.0), 2)  # ROA × leverage proxy
 
         # === FINANCIAL STRENGTH ===
         metrics["current_ratio"] = round(float(info.get('currentRatio')), 2) if info.get('currentRatio') is not None else None
         metrics["quick_ratio"] = round(float(info.get('quickRatio')), 2) if info.get('quickRatio') is not None else None
 
-        # Interest Coverage = EBIT / Interest Expense
-        total_debt = info.get('totalDebt')
-        if ebitda_val and total_debt and total_debt > 0:
-            # Approximate interest expense as ~8% of total debt (Indian avg lending rate)
-            approx_interest = total_debt * 0.08
-            if approx_interest > 0:
-                metrics["interest_coverage"] = round(float(ebitda_val / approx_interest), 2)
+        if info.get('interestCoverage') is not None:
+            metrics["interest_coverage"] = round(float(info.get('interestCoverage')), 2)
 
         # === VALUATION ===
         metrics["peg"] = round(float(info.get('pegRatio')), 2) if info.get('pegRatio') is not None else None
@@ -840,7 +913,7 @@ def fetch_fundamental_metrics(ticker: str) -> Dict:
         if not summary_text:
             meta_name = dynamic_metadata.get(clean_sym, {}).get("name", clean_sym)
             sec = dynamic_metadata.get(clean_sym, {}).get("sector", "NSE Equities")
-            summary_text = f"{meta_name} ({clean_sym}) is a premier NSE-listed equity operating within the {sec} sector, delivering corporate products, services, and growth in the Indian market."
+            summary_text = f"{meta_name} ({clean_sym}) is NSE-listed. Detailed company profile data is unavailable; verify filings and exchange disclosures before trading. Sector metadata: {sec}."
         if len(summary_text) > 350:
             summary_text = summary_text[:347] + "..."
         metrics["about"] = summary_text
@@ -935,270 +1008,252 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
     return float(atr) if pd.notna(atr) else float(tr.tail(period).mean())
 
 
-def calculate_vcp_score(df: pd.DataFrame) -> Optional[Dict]:
-    """Calculate normalized Minervini VCP score (0 to 100)."""
-    if len(df) < 20:
+def _period_return(close: pd.Series, sessions: int) -> Optional[float]:
+    if len(close) <= sessions or float(close.iloc[-sessions - 1]) <= 0:
+        return None
+    return float((close.iloc[-1] / close.iloc[-sessions - 1] - 1.0) * 100.0)
+
+
+def _business_day_age(index_value: Any) -> Tuple[str, int]:
+    stamp = pd.Timestamp(index_value)
+    data_date = stamp.date()
+    today = datetime.now().date()
+    if data_date >= today:
+        return data_date.isoformat(), 0
+    return data_date.isoformat(), int(np.busday_count(data_date, today))
+
+
+def _market_regime(benchmark_df: Optional[pd.DataFrame]) -> str:
+    if benchmark_df is None or len(benchmark_df) < 50:
+        return "unknown"
+    close = benchmark_df["close"]
+    price = float(close.iloc[-1])
+    ma50 = float(close.tail(50).mean())
+    ma200 = float(close.tail(min(200, len(close))).mean())
+    if price > ma50 > ma200:
+        return "favorable"
+    if price > ma200:
+        return "neutral"
+    return "risk_off"
+
+
+def _daily_signal_bar_complete(index_value: Any) -> bool:
+    """Daily vendor candles are provisional until shortly after the NSE close."""
+    now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+    data_date = pd.Timestamp(index_value).date()
+    if data_date != now_ist.date() or now_ist.weekday() >= 5:
+        return True
+    market_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+    finalization_buffer = now_ist.replace(hour=15, minute=40, second=0, microsecond=0)
+    return not (market_open <= now_ist < finalization_buffer)
+
+
+def calculate_vcp_score(df: pd.DataFrame, benchmark_df: Optional[pd.DataFrame] = None) -> Optional[Dict]:
+    """Score fresh breakout and pre-breakout swing setups using only observable OHLCV evidence."""
+    if df is None or len(df) < 60:
         return None
 
-    recent = df.tail(20)
-    current_price = float(df['close'].iloc[-1])
-    
-    # === INSTITUTIONAL QUALITY & LIQUIDITY METRICS ===
-    avg_vol_20d = float(recent['volume'].mean())
-    turnover_20d = current_price * avg_vol_20d
+    df = clean_ohlcv(df)
+    if df is None or len(df) < 60:
+        return None
 
-    # Volatility & Range Metrics
-    atr = calculate_atr(df)
-    atr_pct = float((atr / current_price) * 100) if current_price > 0 else 999.0
+    current_price = float(df["close"].iloc[-1])
+    previous_close = float(df["close"].iloc[-2])
+    latest_high = float(df["high"].iloc[-1])
+    prior_20 = df.iloc[-21:-1]
+    recent_20 = df.tail(20)
+    recent_10 = df.tail(10)
 
-    high_20d = float(recent['high'].max())
-    low_20d = float(recent['low'].min())
-    range_20d = high_20d - low_20d
-    range_pct = float((range_20d / current_price) * 100) if current_price > 0 else 999.0
-
-    current_vol = float(df['volume'].iloc[-1])
-    volume_ratio = float(current_vol / avg_vol_20d) if avg_vol_20d > 0 else 1.0
-
-    vol_last5 = float(recent.tail(5)['volume'].mean())
-    vol_first15 = float(recent.head(15)['volume'].mean())
-    vol_decline = float((vol_first15 - vol_last5) / vol_first15) if vol_first15 > 0 else 0.0
-    vol_50d = float(df.tail(min(len(df), 50))['volume'].mean())
+    # Baselines exclude the signal candle, otherwise the breakout volume dilutes itself.
+    avg_vol_20d = float(prior_20["volume"].mean())
+    current_vol = float(df["volume"].iloc[-1])
+    volume_ratio = float(current_vol / avg_vol_20d) if avg_vol_20d > 0 else 0.0
+    avg_turnover_cr = float(current_price * avg_vol_20d / 10_000_000.0)
+    vol_last5 = float(df.iloc[-6:-1]["volume"].mean())
+    vol_50d = float(df.iloc[-51:-1]["volume"].mean()) if len(df) >= 51 else avg_vol_20d
     dry_up_ratio = float(vol_last5 / vol_50d) if vol_50d > 0 else 1.0
+    vol_first15 = float(prior_20.head(15)["volume"].mean())
+    vol_decline = float((vol_first15 - vol_last5) / vol_first15) if vol_first15 > 0 else 0.0
 
-    price_std = float(recent['close'].std())
-    price_tightness = float((price_std / current_price) * 100) if current_price > 0 else 999.0
+    atr = calculate_atr(df)
+    atr_pct = float(atr / current_price * 100.0) if current_price > 0 else 999.0
+    base_high = float(prior_20["high"].max())
+    base_low = float(prior_20["low"].min())
+    range_pct = float((base_high - base_low) / prior_20["close"].mean() * 100.0)
+    price_tightness = float(prior_20["close"].std() / prior_20["close"].mean() * 100.0)
+    breakout_distance_pct = float((base_high - current_price) / current_price * 100.0)
+    extension_pct = float((current_price / base_high - 1.0) * 100.0) if base_high > 0 else 999.0
+    entry_price = float(base_high * 1.003)
+    max_entry_price = float(base_high * 1.05)
+    raw_stop = max(float(recent_10["low"].min()), current_price - (2.0 * atr))
+    stop_loss = min(raw_stop, current_price * 0.995)
+    risk_reference = current_price if current_price > base_high else entry_price
+    risk_pct = float((risk_reference - stop_loss) / risk_reference * 100.0) if risk_reference > 0 else 999.0
+    days_in_range = int(((prior_20["close"] >= current_price * 0.95) &
+                         (prior_20["close"] <= current_price * 1.05)).sum())
 
-    # Prior base consolidation high (excluding latest candle)
-    past_base = df.iloc[:-1].tail(20) if len(df) > 20 else df.iloc[:-1]
-    prior_resistance = float(past_base['high'].max()) if not past_base.empty else float(recent['high'].max())
-    prior_support = float(past_base['low'].min()) if not past_base.empty else float(recent['low'].min())
+    close = df["close"]
+    ma50 = float(close.tail(50).mean())
+    ma150 = float(close.tail(min(150, len(close))).mean())
+    ma200 = float(close.tail(min(200, len(close))).mean())
+    ma200_month_ago = float(close.iloc[-220:-20].mean()) if len(close) >= 220 else ma200
+    year = df.tail(min(252, len(df)))
+    high_52w = float(year["high"].max())
+    low_52w = float(year["low"].min())
 
-    support = float(recent['low'].min())
-    resistance = float(recent['high'].max())
-    entry_price = round(float(prior_resistance * 1.002), 2)
-    stop_loss = round(float(max(support, current_price - (2 * atr))), 2)
-    risk_pct = round(float(((entry_price - stop_loss) / entry_price) * 100), 2) if entry_price > 0 else 0.0
-    breakout_distance_pct = round(float(((prior_resistance - current_price) / current_price) * 100), 2) if current_price > 0 else 999.0
-
-    days_in_range = int(len(recent[
-        (recent['close'] >= current_price * 0.95) & 
-        (recent['close'] <= current_price * 1.05)
-    ]))
-
-    # === TREND TEMPLATE (30 POINTS MAX) ===
-    close_series = df["close"]
-    ma20 = float(close_series.rolling(min(len(df), 20)).mean().iloc[-1])
-    ma50 = float(close_series.rolling(min(len(df), 50)).mean().iloc[-1])
-    ma150 = float(close_series.rolling(min(len(df), 150)).mean().iloc[-1])
-    ma200 = float(close_series.rolling(min(len(df), 200)).mean().iloc[-1])
-
-    high_52w = float(df["high"].max())
-    low_52w = float(df["low"].min())
-
+    # Stage-2 trend template (25 points). A rising 200DMA is deliberately required for full marks.
     trend_score = 0
-    has_full_history = len(df) >= 200
-    if current_price > ma50: trend_score += 6
-    if current_price > ma150: trend_score += 5
-    if current_price > ma200: trend_score += 5
-    if ma50 > ma150: trend_score += 5
-    if ma150 > ma200: trend_score += 4
-    if low_52w > 0 and (current_price >= 1.20 * low_52w): trend_score += 3
-    if high_52w > 0 and (current_price >= 0.75 * high_52w): trend_score += 2
-    if not has_full_history:
-        trend_score = max(0, trend_score - 5)
+    if current_price > ma50: trend_score += 5
+    if current_price > ma150: trend_score += 4
+    if current_price > ma200: trend_score += 4
+    if ma50 > ma150: trend_score += 4
+    if ma150 > ma200: trend_score += 3
+    if ma200 >= ma200_month_ago: trend_score += 2
+    if low_52w > 0 and current_price >= 1.25 * low_52w: trend_score += 2
+    if high_52w > 0 and current_price >= 0.80 * high_52w: trend_score += 1
+    if len(df) < 200:
+        trend_score = min(trend_score, 17)
 
-    if low_52w > 0 and current_price < 1.20 * low_52w:
-        trend_score = max(0, trend_score - 8)
-    if high_52w > 0 and current_price < 0.75 * high_52w:
-        trend_score = max(0, trend_score - 8)
+    # Three progressively tighter 20-session windows (20 points).
+    def window_range(frame: pd.DataFrame) -> float:
+        mean_close = float(frame["close"].mean())
+        return float((frame["high"].max() - frame["low"].min()) / mean_close * 100.0) if mean_close else 999.0
 
-    # === CONTRACTION WAVE PATTERN (25 POINTS MAX) ===
-    n = len(df)
-    c1, c2, c3 = 100.0, 100.0, range_pct
-    if n >= 60:
-        w1 = df.iloc[max(0, n-60):n-40]
-        w2 = df.iloc[n-40:n-20]
-        if not w1.empty and w1['close'].mean() > 0:
-            c1 = float(((w1['high'].max() - w1['low'].min()) / w1['close'].mean()) * 100)
-        if not w2.empty and w2['close'].mean() > 0:
-            c2 = float(((w2['high'].max() - w2['low'].min()) / w2['close'].mean()) * 100)
+    c1 = window_range(df.iloc[-61:-41])
+    c2 = window_range(df.iloc[-41:-21])
+    c3 = window_range(prior_20)
+    contraction_score = 20 if c1 > c2 > c3 else 15 if c2 > c3 else 10 if c3 <= 12 else 5 if c3 <= 20 else 0
 
-    contraction_score = 0
-    if c1 > c2 > c3:
-        contraction_score += 25
-    elif c2 > c3:
-        contraction_score += 18
-    elif range_pct <= 15.0:
-        contraction_score += 12
-    elif range_pct <= 25.0:
-        contraction_score += 6
-
-    # === VOLUME DRY-UP PATTERN (20 POINTS MAX) ===
-    volume_score = 0
-    if vol_decline >= 0.35: volume_score += 10
-    elif vol_decline >= 0.15: volume_score += 6
-    elif vol_decline >= 0.05: volume_score += 3
-
-    if dry_up_ratio < 0.65: volume_score += 10
-    elif dry_up_ratio < 0.80: volume_score += 8
-    elif dry_up_ratio < 0.90: volume_score += 6
-    elif dry_up_ratio < 1.05: volume_score += 3
-
-    # === PRICE TIGHTNESS & ATR% (15 POINTS MAX) ===
     tightness_score = 0
-    if price_tightness < 2.5: tightness_score += 8
-    elif price_tightness < 4.0: tightness_score += 4
-    elif price_tightness < 6.0: tightness_score += 2
+    tightness_score += 8 if price_tightness <= 2.0 else 5 if price_tightness <= 3.5 else 2 if price_tightness <= 5.0 else 0
+    tightness_score += 7 if atr_pct <= 2.5 else 4 if atr_pct <= 4.0 else 1 if atr_pct <= 6.0 else 0
 
-    if atr_pct < 2.5: tightness_score += 7
-    elif atr_pct < 4.0: tightness_score += 4
-    elif atr_pct < 6.0: tightness_score += 2
+    price_breakout = current_price >= base_high * 1.003
+    volume_expansion = volume_ratio >= 1.30
+    has_valid_base = contraction_score >= 10 and tightness_score >= 5
+    overextended = extension_pct > 5.0
+    signal_bar_complete = _daily_signal_bar_complete(df.index[-1])
+    breakout_confirmed = price_breakout and volume_expansion and has_valid_base and trend_score >= 15 and not overextended and signal_bar_complete
 
-    # === PIVOT PROXIMITY (10 POINTS MAX) ===
-    pivot_score = 0
-    if -1.0 <= breakout_distance_pct <= 4.0: pivot_score += 6
-    elif 4.0 < breakout_distance_pct <= 8.0: pivot_score += 3
-    elif 8.0 < breakout_distance_pct <= 15.0: pivot_score += 1
-
-    if days_in_range >= 12: pivot_score += 4
-    elif days_in_range >= 8: pivot_score += 2
-
-    raw_score = trend_score + contraction_score + volume_score + tightness_score + pivot_score
-    vcp_score = int(round(min(100, max(0, raw_score))))
-
-
-    # Evidence Checklist
-    evidence = []
-    if trend_score >= 20:
-        evidence.append("Minervini Stage 2 uptrend template confirmed")
-    if contraction_score >= 15:
-        evidence.append("Sequential wave volatility contraction (T1 > T2 > T3)")
-    if volume_score >= 12:
-        evidence.append("Volume dry-up near base right side")
-    if tightness_score >= 10:
-        evidence.append("Price action is tight (low ATR%)")
-    if pivot_score >= 5:
-        evidence.append("Pivoting near resistance level")
-
-    # === STRICT BREAKOUT DETERMINATION ===
-    # 1. Price breaking above or matching prior base consolidation high
-    # 2. Volume expansion (volume_ratio >= 1.2 or current_vol >= 1.2 * avg_vol_20d)
-    # 3. Stock emerged from a valid consolidation base
-    is_price_breakout = (current_price >= prior_resistance * 0.998) or (float(df['high'].iloc[-1]) >= prior_resistance * 1.002)
-    is_volume_expansion = (volume_ratio >= 1.2) or (current_vol >= 1.2 * avg_vol_20d)
-    has_valid_base = (contraction_score >= 5 or tightness_score >= 4 or vcp_score >= 35)
-
-    breakout_confirmed = is_price_breakout and is_volume_expansion and has_valid_base
+    # A wick above the pivot is evidence only; it is never a confirmed breakout.
+    rejected_at_pivot = latest_high >= base_high * 1.003 and current_price < base_high
+    near_pivot = -0.75 <= breakout_distance_pct <= 5.0
 
     if breakout_confirmed:
-        status = "breakout"
-        vcp_grade = "🚀 Breakout Confirmed"
-        evidence.append(f"Breakout above prior base high (₹{prior_resistance:.2f}) on heavy volume ({volume_ratio:.1f}x avg)")
-    elif vcp_score >= 65:
-        status = "ready"
-        vcp_grade = "🌟 A+ Elite VCP Ready"
-    elif vcp_score >= 40:
-        status = "forming"
-        vcp_grade = "⭐ A Grade Base"
+        volume_score = 15 if volume_ratio >= 2.0 else 12 if volume_ratio >= 1.5 else 9
     else:
-        status = "weak"
-        vcp_grade = "📌 Developing Base"
+        volume_score = 15 if dry_up_ratio <= 0.60 else 12 if dry_up_ratio <= 0.75 else 8 if dry_up_ratio <= 0.90 else 4 if dry_up_ratio <= 1.05 else 0
 
-    # 1. BREAKOUT SCORE & GRADE (For "Breakout Confirmed" Tab)
-    # Heavy Volume Thrust (40%) + Price Gain & Thrust (30%) + Base Quality (30%)
-    vol_thrust_pts = min(40, int((volume_ratio / 2.0) * 40)) if volume_ratio > 0 else 0
-    price_thrust_pts = min(30, int(max(0, (current_price - float(df['close'].iloc[-2])) / float(df['close'].iloc[-2]) * 100 * 5)) if len(df) > 1 and float(df['close'].iloc[-2]) > 0 else 0)
-    base_qual_pts = min(30, int((contraction_score + tightness_score) * 1.3))
-    raw_breakout_score = vol_thrust_pts + price_thrust_pts + base_qual_pts
-    breakout_score = int(min(100, max(0, raw_breakout_score)))
+    pivot_score = 10 if -0.75 <= breakout_distance_pct <= 2.0 else 7 if breakout_distance_pct <= 5.0 else 3 if breakout_distance_pct <= 8.0 else 0
+    if rejected_at_pivot:
+        pivot_score = max(0, pivot_score - 4)
 
-    if breakout_score >= 80:
-        breakout_grade = "🔥 Institutional Thrust"
-    elif breakout_score >= 60:
-        breakout_grade = "🚀 Strong Volume Breakout"
+    stock_3m = _period_return(close, 63)
+    stock_6m = _period_return(close, 126)
+    benchmark_3m = _period_return(benchmark_df["close"], 63) if benchmark_df is not None else None
+    benchmark_6m = _period_return(benchmark_df["close"], 126) if benchmark_df is not None else None
+    rs_3m = stock_3m - benchmark_3m if stock_3m is not None and benchmark_3m is not None else None
+    rs_6m = stock_6m - benchmark_6m if stock_6m is not None and benchmark_6m is not None else None
+    rs_blend = rs_3m if rs_3m is not None else rs_6m
+    relative_strength_score = 7 if rs_blend is None else 15 if rs_blend >= 10 else 12 if rs_blend >= 5 else 9 if rs_blend >= 0 else 5 if rs_blend >= -5 else 0
+
+    vcp_score = int(min(100, round(
+        trend_score + contraction_score + tightness_score + volume_score + pivot_score + relative_strength_score
+    )))
+    regime = _market_regime(benchmark_df)
+    liquidity_points = 5 if avg_turnover_cr >= 20 else 3 if avg_turnover_cr >= 10 else 1 if avg_turnover_cr >= 5 else 0
+    risk_points = 5 if 0 < risk_pct <= 5 else 3 if risk_pct <= 7 else 0
+    swing_score = int(round(
+        trend_score / 25 * 20 +
+        (contraction_score + tightness_score) / 35 * 25 +
+        pivot_score / 10 * 15 +
+        volume_score / 15 * 15 +
+        relative_strength_score + liquidity_points + risk_points
+    ))
+    if regime == "risk_off":
+        swing_score -= 10
+    if rejected_at_pivot:
+        swing_score -= 8
+    if overextended:
+        swing_score -= 15
+    swing_score = int(min(100, max(0, swing_score)))
+
+    data_date, data_age = _business_day_age(df.index[-1])
+    rejection_reasons = []
+    if current_price < 20: rejection_reasons.append("Price below ₹20")
+    if avg_turnover_cr < 5: rejection_reasons.append(f"Low liquidity (₹{avg_turnover_cr:.1f} Cr/day)")
+    if data_age > 3: rejection_reasons.append(f"Stale data ({data_age} business days old)")
+    if trend_score < 15: rejection_reasons.append("Stage-2 trend not confirmed")
+    if risk_pct <= 0 or risk_pct > 8: rejection_reasons.append(f"Unfavorable stop risk ({risk_pct:.1f}%)")
+    if overextended: rejection_reasons.append(f"Already {extension_pct:.1f}% above pivot")
+    if rejected_at_pivot: rejection_reasons.append("Pivot rejection: high crossed, close failed")
+
+    intraday_breakout_watch = price_breakout and volume_expansion and has_valid_base and not signal_bar_complete
+    if breakout_confirmed:
+        status, setup_type, vcp_grade = "breakout", "Fresh Breakout", "🚀 Confirmed Close + Volume"
+    elif intraday_breakout_watch:
+        status, setup_type, vcp_grade = "ready", "Intraday Breakout Watch", "⚡ Awaiting Daily Close"
+    elif near_pivot and has_valid_base and trend_score >= 15:
+        status, setup_type, vcp_grade = "ready", "Breakout Watch", "🎯 Within 5% of Pivot"
+    elif has_valid_base:
+        status, setup_type, vcp_grade = "forming", "Base Forming", "⏳ Constructive Base"
     else:
-        breakout_grade = "📈 Moderate Breakout"
+        status, setup_type, vcp_grade = "weak", "Developing / Avoid", "📌 Insufficient Confirmation"
 
-    # 2. PIVOT READINESS SCORE & GRADE (For "Pivoting / Ready" Tab)
-    # Pivot Proximity (35%) + Price Tightness & Low ATR (35%) + Volume Dry-Up (30%)
-    prox_pts = 35 if -0.5 <= breakout_distance_pct <= 2.5 else (20 if 2.5 < breakout_distance_pct <= 5.0 else 10)
-    tight_pts = min(35, int(tightness_score * 2.3))
-    dry_pts = 30 if dry_up_ratio < 0.65 else (20 if dry_up_ratio < 0.85 else 10)
-    raw_pivot_score = prox_pts + tight_pts + dry_pts
-    pivot_readiness_score = int(min(100, max(0, raw_pivot_score)))
+    critical_rejections = [r for r in rejection_reasons if not r.startswith("Pivot rejection")]
+    actionable = status in {"breakout", "ready"} and swing_score >= 65 and not critical_rejections
+    setup_quality = "A" if actionable and swing_score >= 80 else "B" if actionable else "Watch" if status in {"ready", "forming"} else "Reject"
 
-    if pivot_readiness_score >= 80:
-        pivot_readiness_grade = "🎯 Coiled A+ Pivot"
-    elif pivot_readiness_score >= 60:
-        pivot_readiness_grade = "⚡ High Alert Pivot"
-    else:
-        pivot_readiness_grade = "📌 Approaching Pivot"
+    base_quality_score = int(min(100, round((contraction_score + tightness_score + trend_score) / 60 * 100)))
+    pivot_readiness_score = int(min(100, round((pivot_score + tightness_score + volume_score) / 40 * 100)))
+    daily_gain_pct = (current_price / previous_close - 1.0) * 100.0 if previous_close > 0 else 0.0
+    breakout_score = int(min(100, round(
+        (min(volume_ratio, 2.5) / 2.5 * 40) +
+        (min(max(daily_gain_pct, 0), 6.0) / 6.0 * 20) +
+        ((contraction_score + tightness_score) / 35 * 25) +
+        (trend_score / 25 * 15)
+    )))
 
-    # 3. BASE QUALITY SCORE & GRADE (For "Forming Base" Tab)
-    # Contraction Waves (45%) + Trend Template (35%) + Tightness (20%)
-    base_wave_pts = min(45, int(contraction_score * 3.0))
-    base_trend_pts = min(35, int(trend_score * 1.16))
-    base_tight_pts = min(20, int(tightness_score * 1.33))
-    raw_base_score = base_wave_pts + base_trend_pts + base_tight_pts
-    base_quality_score = int(min(100, max(0, raw_base_score)))
+    evidence = []
+    if trend_score >= 20: evidence.append("Stage-2 price and moving-average trend")
+    if c1 > c2 > c3: evidence.append(f"Contracting ranges: {c1:.1f}% → {c2:.1f}% → {c3:.1f}%")
+    if dry_up_ratio <= 0.75: evidence.append(f"Supply dry-up: {dry_up_ratio:.2f}x 50-day volume")
+    if breakout_confirmed: evidence.append(f"Closed above ₹{base_high:.2f} pivot on {volume_ratio:.2f}x volume")
+    elif intraday_breakout_watch: evidence.append(f"Intraday move above ₹{base_high:.2f}; confirmation waits for the daily close")
+    elif near_pivot: evidence.append(f"Price is {breakout_distance_pct:.1f}% from ₹{base_high:.2f} pivot")
+    if rs_3m is not None: evidence.append(f"3-month relative strength vs NIFTY: {rs_3m:+.1f}%")
 
-    if base_quality_score >= 75:
-        base_quality_grade = "🌟 A+ Minervini Base"
-    elif base_quality_score >= 50:
-        base_quality_grade = "⭐ A Grade Consolidation"
-    else:
-        base_quality_grade = "⏳ Developing Base"
-
-    if range_pct < 5 and price_tightness < 2:
-        contraction = "Tight"
-    elif range_pct < 8 and price_tightness < 3:
-        contraction = "Tightening"
-    elif range_pct < 12:
-        contraction = "Moderate"
-    else:
-        contraction = "Wide"
-
-    if vol_decline > 0.3:
-        volume_trend = "Declining"
-    elif vol_decline > 0.1:
-        volume_trend = "Stable"
-    elif volume_ratio > 2:
-        volume_trend = "Spike"
-    else:
-        volume_trend = "High"
+    contraction = "Tight" if range_pct < 6 and price_tightness < 2.5 else "Tightening" if range_pct < 10 else "Moderate" if range_pct < 15 else "Wide"
+    volume_trend = "Spike" if volume_ratio >= 2 else "Expansion" if volume_ratio >= 1.3 else "Declining" if vol_decline > 0.2 else "Normal"
+    breakout_grade = "🔥 Institutional Thrust" if breakout_score >= 80 else "🚀 Strong Breakout" if breakout_score >= 65 else "📈 Unconfirmed"
+    pivot_grade = "🎯 Coiled A+ Pivot" if pivot_readiness_score >= 80 else "⚡ High Alert Pivot" if pivot_readiness_score >= 60 else "📌 Approaching Pivot"
+    base_grade = "🌟 A+ Base" if base_quality_score >= 80 else "⭐ Constructive Base" if base_quality_score >= 60 else "⏳ Developing Base"
 
     return {
-        "vcp_score": vcp_score,
-        "vcp_grade": vcp_grade,
-        "breakout_score": breakout_score,
-        "breakout_grade": breakout_grade,
-        "pivot_readiness_score": pivot_readiness_score,
-        "pivot_readiness_grade": pivot_readiness_grade,
-        "base_quality_score": base_quality_score,
-        "base_quality_grade": base_quality_grade,
-        "contraction": contraction,
-        "volume_trend": volume_trend,
-        "status": status,
-        "atr": round(atr, 2),
-        "atr_pct": round(atr_pct, 2),
-        "volume_ratio": round(volume_ratio, 2),
-        "dry_up_ratio": round(dry_up_ratio, 2),
-        "price_tightness": round(price_tightness, 2),
-        "support_level": round(support, 2),
-        "resistance_level": round(resistance, 2),
-        "entry_price": round(entry_price, 2),
-        "stop_loss": round(stop_loss, 2),
-        "risk_pct": round(risk_pct, 2),
-        "breakout_distance_pct": round(breakout_distance_pct, 2),
-        "trend_score": trend_score,
-        "contraction_score": contraction_score,
-        "volume_score": volume_score,
-        "tightness_score": tightness_score,
-        "pivot_score": pivot_score,
-        "days_in_range": days_in_range,
-        "avg_volume_20d": round(avg_vol_20d, 0),
-        "current_volume": round(current_vol, 0),
-        "evidence": evidence or ["Base developing - monitor for tighter contraction"],
+        "vcp_score": vcp_score, "vcp_grade": vcp_grade,
+        "breakout_score": breakout_score, "breakout_grade": breakout_grade,
+        "pivot_readiness_score": pivot_readiness_score, "pivot_readiness_grade": pivot_grade,
+        "base_quality_score": base_quality_score, "base_quality_grade": base_grade,
+        "contraction": contraction, "volume_trend": volume_trend, "status": status,
+        "atr": round(atr, 2), "atr_pct": round(atr_pct, 2),
+        "volume_ratio": round(volume_ratio, 2), "dry_up_ratio": round(dry_up_ratio, 2),
+        "price_tightness": round(price_tightness, 2), "support_level": round(base_low, 2),
+        "resistance_level": round(base_high, 2), "entry_price": round(entry_price, 2),
+        "max_entry_price": round(max_entry_price, 2),
+        "stop_loss": round(stop_loss, 2), "risk_pct": round(risk_pct, 2),
+        "breakout_distance_pct": round(breakout_distance_pct, 2), "trend_score": trend_score,
+        "contraction_score": contraction_score, "volume_score": volume_score,
+        "tightness_score": tightness_score, "pivot_score": pivot_score,
+        "days_in_range": days_in_range, "avg_volume_20d": round(avg_vol_20d, 0),
+        "current_volume": round(current_vol, 0), "avg_turnover_cr": round(avg_turnover_cr, 2),
+        "rs_3m_pct": round(rs_3m, 2) if rs_3m is not None else None,
+        "rs_6m_pct": round(rs_6m, 2) if rs_6m is not None else None,
+        "relative_strength_score": relative_strength_score, "swing_score": swing_score,
+        "setup_type": setup_type, "setup_quality": setup_quality, "actionable": actionable,
+        "rejection_reasons": rejection_reasons, "data_date": data_date,
+        "data_age_business_days": data_age, "signal_bar_complete": signal_bar_complete,
+        "market_regime": regime,
+        "evidence": evidence or ["No high-conviction breakout evidence yet"],
     }
 
 
@@ -1270,13 +1325,13 @@ def get_stock_info(ticker: str, fund_metrics: Dict = None) -> Dict:
     return {"name": name, "sector": sector}
 
 
-def scan_stock(ticker: str) -> Optional[VCPResult]:
+def scan_stock(ticker: str, benchmark_df: Optional[pd.DataFrame] = None) -> Optional[VCPResult]:
     """Scan a single stock for VCP pattern and fundamental quality."""
     df = fetch_stock_data(ticker)
     if df is None:
         return None
 
-    vcp_data = calculate_vcp_score(df)
+    vcp_data = calculate_vcp_score(df, benchmark_df=benchmark_df)
     if vcp_data is None:
         return None
 
@@ -1355,6 +1410,7 @@ def scan_stock(ticker: str) -> Optional[VCPResult]:
         support_level=vcp_data["support_level"],
         resistance_level=vcp_data["resistance_level"],
         entry_price=vcp_data["entry_price"],
+        max_entry_price=vcp_data["max_entry_price"],
         stop_loss=vcp_data["stop_loss"],
         risk_pct=vcp_data["risk_pct"],
         breakout_distance_pct=vcp_data["breakout_distance_pct"],
@@ -1366,6 +1422,19 @@ def scan_stock(ticker: str) -> Optional[VCPResult]:
         days_in_range=vcp_data["days_in_range"],
         avg_volume_20d=vcp_data["avg_volume_20d"],
         current_volume=vcp_data["current_volume"],
+        avg_turnover_cr=vcp_data["avg_turnover_cr"],
+        rs_3m_pct=vcp_data["rs_3m_pct"],
+        rs_6m_pct=vcp_data["rs_6m_pct"],
+        relative_strength_score=vcp_data["relative_strength_score"],
+        swing_score=vcp_data["swing_score"],
+        setup_type=vcp_data["setup_type"],
+        setup_quality=vcp_data["setup_quality"],
+        actionable=vcp_data["actionable"],
+        rejection_reasons=vcp_data["rejection_reasons"],
+        data_date=vcp_data["data_date"],
+        data_age_business_days=vcp_data["data_age_business_days"],
+        signal_bar_complete=vcp_data["signal_bar_complete"],
+        market_regime=vcp_data["market_regime"],
         pe_ratio=fund_metrics.get("pe"),
         roe_pct=fund_metrics.get("roe"),
         profit_margin_pct=fund_metrics.get("profit_margin"),
@@ -1388,10 +1457,11 @@ def scan_universe(tickers: List[str], min_score: int = 0,
     """Scan multiple stocks in parallel using ThreadPoolExecutor."""
     results = []
     scan_cache["errors"] = []
+    benchmark_df = fetch_stock_data("^NSEI")
 
     def _worker(ticker: str) -> Optional[VCPResult]:
         try:
-            res = scan_stock(ticker)
+            res = scan_stock(ticker, benchmark_df=benchmark_df)
             if res and min_price <= res.price <= max_price:
                 if min_score == 0 or res.vcp_score >= min_score:
                     return res
@@ -1406,10 +1476,9 @@ def scan_universe(tickers: List[str], min_score: int = 0,
             if res is not None:
                 results.append(res)
 
-    results.sort(key=lambda x: x.vcp_score, reverse=True)
+    results.sort(key=lambda x: (x.actionable, x.swing_score, x.vcp_score), reverse=True)
     serialized = [serialize_result(r) for r in results]
-    evaluated = fundamental_engine.evaluate_universe(serialized)
-    return evaluated
+    return process_universe_fundamental_scores(serialized)
 
 
 def clean_json_value(val):
@@ -1438,10 +1507,15 @@ def serialize_result(result):
 
 
 def process_universe_fundamental_scores(result_dicts: List[Dict]) -> List[Dict]:
-    """Pass universe result dicts through the Institutional Fundamental Scoring Engine."""
+    """Add fundamental ranks without destroying the scanner's technical ranking order."""
     if not result_dicts:
         return []
-    return fundamental_engine.evaluate_universe(result_dicts)
+    original_order = {
+        str(row.get("ticker", "")): position for position, row in enumerate(result_dicts)
+    }
+    evaluated = fundamental_engine.evaluate_universe(result_dicts)
+    evaluated.sort(key=lambda row: original_order.get(str(row.get("ticker", "")), len(original_order)))
+    return evaluated
 
 
 def load_cache():
@@ -1451,6 +1525,9 @@ def load_cache():
             try:
                 with open(filepath, 'r') as f:
                     data = json.load(f)
+                if int(data.get("schema_version", 0) or 0) != SCAN_SCHEMA_VERSION:
+                    print(f"Ignoring legacy scan cache from {filepath}; a fresh scan is required.")
+                    continue
                 scan_cache["last_scan"] = data.get("last_scan")
                 res = data.get("results", {})
                 if res and any(len(v) > 0 for v in res.values()):
@@ -1465,6 +1542,7 @@ def save_cache():
     """Save scan results atomically to prevent file corruption."""
     try:
         data = {
+            "schema_version": SCAN_SCHEMA_VERSION,
             "last_scan": scan_cache["last_scan"],
             "results": {k: [serialize_result(r) for r in v] for k, v in scan_cache["results"].items() if v}
         }
@@ -1608,6 +1686,10 @@ def api_scan():
 
 def calculate_swing_conviction_score(stock) -> Tuple[int, str]:
     """Calculate Conviction Score (0-100) for Swing Trading based on risk-reward, pivot proximity, volume dry-up & fundamentals."""
+    stored_score = stock.get('swing_score') if isinstance(stock, dict) else getattr(stock, 'swing_score', None)
+    if stored_score is not None:
+        evidence = stock.get('evidence', []) if isinstance(stock, dict) else getattr(stock, 'evidence', [])
+        return int(stored_score), " • ".join(evidence[:3]) if evidence else "Quantified breakout setup"
     vcp_score = stock.get('vcp_score', 0) if isinstance(stock, dict) else getattr(stock, 'vcp_score', 0)
     pivot_readiness = stock.get('pivot_readiness_score', 0) if isinstance(stock, dict) else getattr(stock, 'pivot_readiness_score', 0)
     base_quality = stock.get('base_quality_score', 0) if isinstance(stock, dict) else getattr(stock, 'base_quality_score', 0)
@@ -1745,7 +1827,7 @@ def api_watchlist_remove():
 
 @app.route('/api/results/top_picks')
 def api_top_picks():
-    """Get Top 10 Best Swing Trade Setups in the entire market based on conviction scoring."""
+    """Return only fresh, liquid, actionable breakout or near-pivot candidates."""
     all_candidates = []
     seen_tickers = set()
 
@@ -1755,10 +1837,16 @@ def api_top_picks():
             t = stock.get('ticker', '') if isinstance(stock, dict) else getattr(stock, 'ticker', '')
             if t and t not in seen_tickers:
                 seen_tickers.add(t)
+                raw_dict = serialize_result(stock)
+                if "actionable" in raw_dict and not raw_dict.get("actionable"):
+                    continue
+                if int(raw_dict.get("data_age_business_days", 0) or 0) > 3:
+                    continue
                 conviction_score, conviction_reason = calculate_swing_conviction_score(stock)
-                s_dict = serialize_result(stock)
-                s_dict["vcp_score"] = conviction_score  # Override rating display
-                s_dict["vcp_grade"] = f"🔥 Top #{len(all_candidates)+1} Swing Setup"
+                if conviction_score < 65:
+                    continue
+                s_dict = raw_dict
+                s_dict["swing_score"] = conviction_score
                 s_dict["conviction_reason"] = conviction_reason
                 all_candidates.append((conviction_score, s_dict))
 
@@ -1766,9 +1854,10 @@ def api_top_picks():
     all_candidates.sort(key=lambda x: x[0], reverse=True)
 
     top_10 = []
-    for rank, (score, s_dict) in enumerate(all_candidates[:10], start=1):
-        s_dict["top_category_tag"] = f"🔥 #{rank} Swing Pick"
-        s_dict["vcp_grade"] = f"🔥 #{rank} Conviction ({score} pts)"
+    for rank, (score, s_dict) in enumerate(all_candidates[:15], start=1):
+        setup_type = s_dict.get("setup_type", "Swing Setup")
+        s_dict["top_category_tag"] = f"#{rank} {setup_type}"
+        s_dict["vcp_grade"] = f"{setup_type} • Swing {score}/100"
         top_10.append(s_dict)
 
     evaluated = process_universe_fundamental_scores(top_10)
@@ -1779,6 +1868,8 @@ def api_top_picks():
         "matches": len(evaluated),
         "last_scan": scan_cache["last_scan"],
         "is_scanning": scan_cache["is_scanning"],
+        "methodology": "Close-confirmed breakout or within 5% of pivot; Stage-2 trend; volume; contraction; relative strength; liquidity; freshness; defined stop risk.",
+        "disclaimer": "Research shortlist, not a prediction or personalized investment recommendation.",
         "results": evaluated
     })
 
@@ -2086,16 +2177,19 @@ def api_export(universe):
 
     output = StringIO()
     writer = csv.writer(output)
-    writer.writerow(['Ticker', 'Name', 'Sector', 'Price', 'Change%', 'VCP Score', 'VCP Grade',
-                     'Status', 'Contraction', 'Volume Trend', '20D Range', 
-                     'Support', 'Resistance', 'ATR%', 'Last Updated'])
+    writer.writerow(['Ticker', 'Name', 'Sector', 'Price', 'Change%', 'Swing Score', 'VCP Score',
+                     'Setup Type', 'Actionable', 'Status', 'Contraction', 'Volume Ratio',
+                     'Volume Dry Up', 'Pivot Gap%', 'RS vs Nifty 3M%', 'Avg Turnover Cr',
+                     'Pivot Trigger', '5% Chase Limit', 'Stop', 'Risk%', 'Data Date', 'Rejection Reasons'])
 
     for result in results:
         r = serialize_result(result)
         writer.writerow([r.get('ticker'), r.get('name'), r.get('sector'), r.get('price'), r.get('change_pct'),
-                        r.get('vcp_score'), r.get('vcp_grade'), r.get('status'), r.get('contraction'), r.get('volume_trend'),
-                        r.get('range_20d'), r.get('support_level'), r.get('resistance_level'), 
-                        r.get('atr_pct'), r.get('last_updated')])
+                        r.get('swing_score'), r.get('vcp_score'), r.get('setup_type'), r.get('actionable'),
+                        r.get('status'), r.get('contraction'), r.get('volume_ratio'), r.get('dry_up_ratio'),
+                        r.get('breakout_distance_pct'), r.get('rs_3m_pct'), r.get('avg_turnover_cr'),
+                        r.get('entry_price'), r.get('max_entry_price'), r.get('stop_loss'), r.get('risk_pct'), r.get('data_date'),
+                        '; '.join(r.get('rejection_reasons') or [])])
 
     output.seek(0)
     return Response(output.getvalue(), mimetype='text/csv',

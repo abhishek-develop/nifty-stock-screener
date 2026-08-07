@@ -593,6 +593,7 @@
             <div class="input-group">
                 <label class="input-label">Sort Results By</label>
                 <select id="sortSelect" onchange="sortBy(this.value)" class="input-select">
+                    <option value="swing_score">🎯 Swing Setup Score</option>
                     <option value="vcp_score">🌟 VCP Technical Rating</option>
                     <option value="fundamental_score">💎 Overall Fundamental Score</option>
                     <option value="profitability_score">📊 Profitability Score (25%)</option>
@@ -635,11 +636,12 @@
 
         <!-- FILTER TABS NAV -->
         <div class="tab-bar">
-            <button class="tab-btn tab-top-picks" onclick="switchTab('top_picks', this)">🔥 Top 10 Best Swing Trades</button>
+            <button class="tab-btn tab-top-picks" onclick="switchTab('top_picks', this)">🎯 Breakout Radar</button>
             <button class="tab-btn tab-ipo-breakouts" onclick="switchTab('ipo_breakouts', this)">🐣 IPO Breakouts</button>
             <button class="tab-btn tab-watchlist" style="color:var(--accent-amber);" onclick="switchTab('watchlist', this)">⭐ My Watchlist</button>
             <button class="tab-btn active" onclick="switchTab('ALL', this)">🌟 All Scanned Setups</button>
             <button class="tab-btn" onclick="switchTab('breakout', this)">🚀 Breakout Confirmed</button>
+            <button class="tab-btn" onclick="switchTab('ready', this)">🎯 Near Pivot</button>
             <button class="tab-btn" onclick="switchTab('forming', this)">⏳ Forming Base</button>
             
             <label class="filter-toggle" style="background: rgba(5, 150, 105, 0.08); border-color: rgba(5, 150, 105, 0.3); color: var(--accent-emerald);">
@@ -650,12 +652,16 @@
             <button class="btn-secondary" style="font-size:0.75rem; padding:0.45rem 0.75rem;" onclick="exportCSV()">📥 Export CSV</button>
         </div>
 
+        <div style="font-size:0.78rem; color:var(--text-sub); background:rgba(217,119,6,0.07); border:1px solid rgba(217,119,6,0.25); border-radius:0.65rem; padding:0.7rem 0.9rem; line-height:1.45;">
+            Breakout Radar is a rules-based research shortlist, not a prediction or personalized recommendation. “Confirmed” requires a close above the pivot with volume; always verify the data date, liquidity, entry and stop before acting.
+        </div>
+
         <!-- MAIN TABLE VIEW -->
         <div class="table-card">
             <table>
                 <thead>
                     <tr>
-                        <th id="thRatingHeader" onclick="sortBy('vcp_score')">VCP Rating ↕</th>
+                        <th id="thRatingHeader" onclick="sortBy('swing_score')">Swing Score ↕</th>
                         <th onclick="sortBy('fundamental_score')">💎 Institutional Fundamentals ↕</th>
                         <th onclick="sortBy('ticker')">Stock Details ↕</th>
                         <th onclick="sortBy('sector')">Sector ↕</th>
@@ -850,7 +856,7 @@
         let watchlistResults = [];
         let watchlistTickers = new Set();
         let activeTab = 'ALL';
-        let currentSort = { col: 'vcp_score', dir: 'desc' };
+        let currentSort = { col: 'swing_score', dir: 'desc' };
         let activeStock = null;
         let currentInterval = 'D';
         let lwChart = null;
@@ -943,7 +949,7 @@
         }
 
         async function loadTopPicks() {
-            document.getElementById('scanStatusText').innerText = "Calculating Top 10 Swing Trade conviction scores...";
+            document.getElementById('scanStatusText').innerText = "Ranking fresh breakout and near-pivot setups...";
             try {
                 const res = await fetch('/api/results/top_picks');
                 const data = await res.json();
@@ -951,11 +957,11 @@
                     topPicksResults = data.results || [];
                     populateSectors();
                     renderResults();
-                    document.getElementById('scanStatusText').innerText = `Loaded Top 10 Best Swing Trades`;
+                    document.getElementById('scanStatusText').innerText = `Loaded ${topPicksResults.length} actionable setups`;
                 }
             } catch(e) {
                 console.error("loadTopPicks error:", e);
-                document.getElementById('scanStatusText').innerText = "Failed to load Top 10 Swing Trades";
+                document.getElementById('scanStatusText').innerText = "Failed to load Breakout Radar";
             }
         }
 
@@ -1097,11 +1103,12 @@
             const th = document.getElementById('thRatingHeader');
             if (th) {
                 if (tab === 'breakout') th.innerHTML = 'Breakout Rating ↕';
+                else if (tab === 'ready') th.innerHTML = 'Pivot Readiness ↕';
                 else if (tab === 'forming') th.innerHTML = 'Base Quality Rating ↕';
-                else if (tab === 'top_picks') th.innerHTML = 'Conviction Rating ↕';
+                else if (tab === 'top_picks') th.innerHTML = 'Swing Setup Score ↕';
                 else if (tab === 'ipo_breakouts') th.innerHTML = 'IPO Rating ↕';
                 else if (tab === 'watchlist') th.innerHTML = 'Watchlist Rating ↕';
-                else th.innerHTML = 'VCP Rating ↕';
+                else th.innerHTML = 'Swing Setup Score ↕';
             }
 
             if (tab === 'top_picks') {
@@ -1158,7 +1165,8 @@
             const dataset = activeTab === 'top_picks' ? topPicksResults : (activeTab === 'ipo_breakouts' ? ipoBreakoutsResults : (activeTab === 'watchlist' ? watchlistResults : currentResults));
 
             let filtered = dataset.filter(r => {
-                if (r.vcp_score < minScore) return false;
+                const filterScore = r.swing_score !== undefined ? r.swing_score : r.vcp_score;
+                if (filterScore < minScore) return false;
                 if (fundOnly) {
                     if (!r.is_fundamentally_sound) return false;
                     if (r.roe_pct === null || r.roe_pct === undefined || r.roe_pct < 10.0) return false;
@@ -1229,9 +1237,18 @@
                 if (activeTab === 'breakout') {
                     tabScore = r.breakout_score !== undefined ? r.breakout_score : r.vcp_score;
                     tabGrade = r.breakout_grade || '🚀 Breakout Confirmed';
+                } else if (activeTab === 'ready') {
+                    tabScore = r.pivot_readiness_score !== undefined ? r.pivot_readiness_score : r.vcp_score;
+                    tabGrade = r.pivot_readiness_grade || '🎯 Near Pivot';
                 } else if (activeTab === 'forming') {
                     tabScore = r.base_quality_score !== undefined ? r.base_quality_score : r.vcp_score;
                     tabGrade = r.base_quality_grade || '⏳ Forming Base';
+                } else if (activeTab === 'top_picks') {
+                    tabScore = r.swing_score !== undefined ? r.swing_score : r.vcp_score;
+                    tabGrade = r.vcp_grade || `${r.setup_type || 'Swing Setup'}`;
+                } else if (r.swing_score !== undefined) {
+                    tabScore = r.swing_score;
+                    tabGrade = `${r.setup_type || 'Setup'} • Technical ${r.vcp_score}/100`;
                 }
 
                 const scoreClass = tabScore >= 65 ? 'score-high' : tabScore >= 40 ? 'score-mid' : 'score-low';
@@ -1251,8 +1268,9 @@
                 }).join('');
 
                 const cleanTicker = r.ticker.replace(/[^a-zA-Z0-9_-]/g, '');
-                const categoryBadge = r.top_category_tag 
-                    ? `<span style="background:rgba(124, 58, 237, 0.1); color:var(--accent-purple); border:1px solid rgba(124, 58, 237, 0.3); font-size:0.7rem; font-weight:700; padding:0.15rem 0.4rem; border-radius:0.3rem; display:inline-block;">${r.top_category_tag}</span>`
+                const setupBadge = r.top_category_tag || r.setup_type;
+                const categoryBadge = setupBadge
+                    ? `<span style="background:rgba(124, 58, 237, 0.1); color:var(--accent-purple); border:1px solid rgba(124, 58, 237, 0.3); font-size:0.7rem; font-weight:700; padding:0.15rem 0.4rem; border-radius:0.3rem; display:inline-block;">${setupBadge}</span>`
                     : '';
                 const fundBadge = r.is_fundamentally_sound 
                     ? `<span title="Fundamentally Strong (Positive ROE & EPS)" style="font-size:0.75rem; margin-left:0.2rem; cursor:help;">💎</span>` 
@@ -1279,7 +1297,7 @@
                                 ${starIcon}<span style="font-weight:700; font-size:0.95rem; color:var(--accent-blue);">${r.ticker}</span>${fundBadge}
                                 ${categoryBadge}
                             </div>
-                            ${r.conviction_reason ? `<div style="font-size:0.72rem; color:var(--accent-emerald); font-weight:600; margin-top:0.1rem;">${r.conviction_reason}</div>` : `<div style="font-size:0.75rem; color:var(--text-muted);">${r.name}</div>`}
+                            ${r.conviction_reason ? `<div style="font-size:0.72rem; color:var(--accent-emerald); font-weight:600; margin-top:0.1rem;">${r.conviction_reason}</div>` : `<div style="font-size:0.75rem; color:var(--text-muted);">${r.name}${r.data_date ? ` • Data ${r.data_date}` : ''}</div>`}
                         </td>
                         <td><span style="font-size:0.8rem; color:var(--text-sub);">${r.sector || 'NSE'}</span></td>
                         <td style="font-weight:600;">₹${r.price.toFixed(2)}</td>
